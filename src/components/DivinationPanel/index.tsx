@@ -347,6 +347,7 @@ export function DivinationPanel({
             onOpenAssistant={onOpenAssistant}
             onReturnToBoard={onReturnToBoard}
             onRestart={onRestart}
+            liurenSubject={{ gender: draft.gender, birthYear: draft.birthYear }}
           />
         </>
       ) : null}

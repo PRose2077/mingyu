@@ -13,6 +13,9 @@ import {
   ResultShareFab,
 } from '@/components/workspace/WorkspaceUI';
 import { useViewportSize } from '@/hooks/useViewportWidth';
+import { LiurenWorkflowPanel } from './LiurenWorkflowPanel';
+import { buildLiurenWorkflowContext } from '@/lib/ai/liuren-workflow';
+import type { LiurenData } from '@/types/divination';
 
 interface DivinationResultProps {
   isSubmitting: boolean;
@@ -28,6 +31,7 @@ interface DivinationResultProps {
   onOpenAssistant?: () => void;
   onReturnToBoard?: () => void;
   onRestart?: () => void;
+  liurenSubject?: { gender?: '' | '男' | '女'; birthYear?: string };
 }
 
 export function DivinationResult({
@@ -44,6 +48,7 @@ export function DivinationResult({
   onOpenAssistant,
   onReturnToBoard,
   onRestart,
+  liurenSubject,
 }: DivinationResultProps) {
   const [aiSettings] = useAiSettings();
   const isAiEnabled = aiSettings.enabled;
@@ -54,6 +59,16 @@ export function DivinationResult({
   const showEmbeddedAssistant = !assistantOnly && !isCompactResultLayout;
   const showBoard = !assistantOnly;
   const showInterpretation = assistantOnly || showEmbeddedAssistant;
+  const liurenWorkflowContext = useMemo(() => {
+    if (session?.method !== 'liuren') return '';
+    return buildLiurenWorkflowContext({
+      data: session.data as LiurenData,
+      question: session.question,
+      gender: liurenSubject?.gender,
+      birthYear: liurenSubject?.birthYear,
+      timeContextText: session.timeContext?.promptText,
+    });
+  }, [liurenSubject?.birthYear, liurenSubject?.gender, session]);
 
   useEffect(() => {
     const boardPane = boardPaneRef.current;
@@ -185,7 +200,27 @@ export function DivinationResult({
               isAiEnabled ? 'is-ai-mode' : 'is-prompt-mode'
             }`}
           >
-            {isAiEnabled ? (
+            {session.method === 'liuren' ? (
+              <div className="divination-ai-card">
+                <LiurenWorkflowPanel
+                  workflowContext={liurenWorkflowContext}
+                  contextPrompt={session.prompt}
+                  aiEnabled={isAiEnabled}
+                  aiConfig={aiRequestConfig}
+                />
+                {!isAiEnabled ? (
+                  <PromptDeliveryPanel
+                    promptText={session.prompt}
+                    copyState={copyState}
+                    shareState={shareState}
+                    onCopy={onCopy}
+                    onShare={onShare}
+                    question={session.question || methodLabelMap[session.method]}
+                    showShare={isCompactResultLayout}
+                  />
+                ) : null}
+              </div>
+            ) : isAiEnabled ? (
               <div className="divination-ai-card">
                 <AiChatPanel
                   contextPrompt={session.prompt}

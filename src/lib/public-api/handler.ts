@@ -116,7 +116,13 @@ import {
   type ZiweiPromptTopic,
   type ZiweiSchool,
 } from './prompt-builders';
-import { handleAiAnalyze, handleAiModels, type AiEnv, type AiRuntime } from '../ai/proxy';
+import {
+  handleAiAnalyze,
+  handleAiModels,
+  handleLiurenWorkflow,
+  type AiEnv,
+  type AiRuntime,
+} from '../ai/proxy';
 import {
   API_VERSION,
   DEFAULT_PUBLIC_API_RUNTIME,
@@ -1760,6 +1766,11 @@ export async function handlePublicApiRequest(
   // AI 解析走独立的 SSE 流式响应，不经过 JSON 包装
   if (routeSegments.join('/') === 'ai/analyze' && request.method === 'POST') {
     return handleAiAnalyze(request, env, aiRuntime);
+  }
+
+  // 大六壬专用内部工作流；故意不登记到 manifest / OpenAPI / MCP。
+  if (routeSegments.join('/') === 'ai/liuren-workflow' && request.method === 'POST') {
+    return handleLiurenWorkflow(request, env, aiRuntime);
   }
 
   if (routeSegments.join('/') === 'ai/models' && request.method === 'POST') {

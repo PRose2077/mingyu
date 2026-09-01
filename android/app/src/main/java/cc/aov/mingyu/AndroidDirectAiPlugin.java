@@ -35,6 +35,7 @@ public class AndroidDirectAiPlugin extends Plugin {
     private static final long TOTAL_TIMEOUT_MS = 95_000L;
     private static final int MAX_MESSAGES = 30;
     private static final int MAX_PROMPT_LENGTH = 50_000;
+    private static final int MAX_SYSTEM_PROMPT_LENGTH = 20_000;
     private static final int MAX_ERROR_BODY_LENGTH = 128_000;
     private static final String SYSTEM_PROMPT_SINGLE = "请根据用户提供的排盘资料和问题直接解读。";
     private static final String SYSTEM_PROMPT_CHAT = "用户的第一条消息是本次排盘资料和问题。请继续围绕这份资料解读。";
@@ -50,6 +51,9 @@ public class AndroidDirectAiPlugin extends Plugin {
         String apiKey = trim(call.getString("apiKey"));
         String model = trim(call.getString("model"));
         String rawBaseUrl = trim(call.getString("baseUrl"));
+        String customSystemPrompt = trim(call.getString("systemPrompt"));
+        Double requestedTemperature = call.getDouble("temperature");
+        Integer requestedMaxTokens = call.getInt("maxTokens");
         JSArray rawMessages = call.getArray("messages");
 
         if (requestId.isEmpty() || apiKey.isEmpty() || model.isEmpty() || rawMessages == null) {
@@ -65,14 +69,26 @@ public class AndroidDirectAiPlugin extends Plugin {
         final JSONArray messages;
         try {
             endpoint = buildEndpoint(rawBaseUrl, "chat/completions");
-            messages = buildMessages(rawMessages);
+            if (customSystemPrompt.length() > MAX_SYSTEM_PROMPT_LENGTH) {
+                throw new IllegalArgumentException("系统提示词不能超过 20000 字符。");
+            }
+            messages = buildMessages(rawMessages, customSystemPrompt);
         } catch (IllegalArgumentException | JSONException error) {
             activeRequests.remove(requestId);
             call.reject(error.getMessage());
             return;
         }
 
-        executor.execute(() -> performStream(requestId, endpoint, apiKey, model, messages));
+        final double temperature = requestedTemperature == null ? 0.7 : requestedTemperature;
+        final int maxTokens = requestedMaxTokens == null ? 4096 : requestedMaxTokens;
+        if (temperature < 0 || temperature > 2 || maxTokens < 1 || maxTokens > 8192) {
+            activeRequests.remove(requestId);
+            call.reject("AI 生成参数超出允许范围。");
+            return;
+        }
+        executor.execute(
+            () -> performStream(requestId, endpoint, apiKey, model, messages, temperature, maxTokens)
+        );
         call.resolve();
     }
 
@@ -124,7 +140,9 @@ public class AndroidDirectAiPlugin extends Plugin {
         URL endpoint,
         String apiKey,
         String model,
-        JSONArray messages
+        JSONArray messages,
+        double temperature,
+        int maxTokens
     ) {
         HttpsURLConnection connection = null;
         try {
@@ -136,8 +154,8 @@ public class AndroidDirectAiPlugin extends Plugin {
             JSONObject body = new JSONObject();
             body.put("model", model);
             body.put("stream", true);
-            body.put("max_tokens", 4096);
-            body.put("temperature", 0.7);
+            body.put("max_tokens", maxTokens);
+            body.put("temperature", temperature);
             body.put("messages", messages);
             byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
             connection.setDoOutput(true);
@@ -286,7 +304,7 @@ public class AndroidDirectAiPlugin extends Plugin {
         return connection;
     }
 
-    private JSONArray buildMessages(JSArray rawMessages) throws JSONException {
+    private JSONArray buildMessages(JSArray rawMessages, String customSystemPrompt) throws JSONException {
         if (rawMessages.length() < 1 || rawMessages.length() > MAX_MESSAGES) {
             throw new IllegalArgumentException("一次最多发送 30 条消息，请拆分为多次请求。");
         }
@@ -312,7 +330,12 @@ public class AndroidDirectAiPlugin extends Plugin {
 
         JSONObject system = new JSONObject();
         system.put("role", "system");
-        system.put("content", rawMessages.length() > 1 ? SYSTEM_PROMPT_CHAT : SYSTEM_PROMPT_SINGLE);
+        system.put(
+            "content",
+            customSystemPrompt.isEmpty()
+                ? (rawMessages.length() > 1 ? SYSTEM_PROMPT_CHAT : SYSTEM_PROMPT_SINGLE)
+                : customSystemPrompt
+        );
         JSONArray completed = new JSONArray();
         completed.put(system);
         for (int index = 0; index < messages.length(); index++) completed.put(messages.get(index));

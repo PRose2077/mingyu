@@ -12,6 +12,15 @@ import {
   RequestBodyTooLargeError,
 } from '../http/request-body';
 import { consumeBuiltinAiRateLimit, type AiRateLimitEnv } from './rate-limit';
+import {
+  LIUREN_WORKFLOW_STEP_IDS,
+  LIUREN_WORKFLOW_VERSION,
+  buildLiurenWorkflowUserPrompt,
+  getLiurenWorkflowStep,
+  isLiurenWorkflowStepId,
+  type LiurenWorkflowReport,
+  type LiurenWorkflowStepId,
+} from './liuren-workflow';
 
 const DEFAULT_BASE_URL = 'https://api.deepseek.com/v1';
 const DEFAULT_MODEL = 'deepseek-chat';
@@ -318,6 +327,352 @@ export async function handleAiAnalyze(
   });
 }
 
+type LiurenWorkflowRequestBody = {
+  version?: unknown;
+  context?: unknown;
+  completedReports?: unknown;
+  resumeFrom?: unknown;
+  aiConfig?: AiProviderConfig;
+};
+
+type LiurenWorkflowSseEvent =
+  | { type: 'step_start'; stepId: LiurenWorkflowStepId }
+  | { type: 'step_delta'; stepId: LiurenWorkflowStepId; content: string }
+  | { type: 'step_complete'; stepId: LiurenWorkflowStepId; content: string }
+  | { type: 'workflow_complete' }
+  | {
+      type: 'workflow_error';
+      stepId: LiurenWorkflowStepId;
+      code: string;
+      message: string;
+      retryable: boolean;
+    };
+
+const MAX_LIUREN_WORKFLOW_CONTEXT_LENGTH = 35_000;
+const MAX_LIUREN_WORKFLOW_REPORT_LENGTH = 8_000;
+const MAX_LIUREN_MASTER_REPORT_LENGTH = 16_000;
+
+/** 大六壬内部 6+1 串行研判。该入口不加入公开 API 清单。 */
+export async function handleLiurenWorkflow(
+  request: Request,
+  env?: AiEnv,
+  runtime: AiRuntime = {},
+): Promise<Response> {
+  let body: LiurenWorkflowRequestBody;
+  try {
+    body = parseJsonObject(
+      await readLimitedRequestText(request, DEFAULT_MAX_REQUEST_BODY_BYTES),
+    ) as LiurenWorkflowRequestBody;
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      return aiJsonError(
+        413,
+        'REQUEST_BODY_TOO_LARGE',
+        `请求体不能超过 ${DEFAULT_MAX_REQUEST_BODY_BYTES} 字节。`,
+      );
+    }
+    return aiJsonError(400, 'BAD_REQUEST', '请求体必须是合法 JSON。');
+  }
+
+  if (body.version !== LIUREN_WORKFLOW_VERSION) {
+    return aiJsonError(400, 'LIUREN_WORKFLOW_VERSION_INVALID', '大六壬工作流版本不受支持。');
+  }
+  const context = typeof body.context === 'string' ? body.context.trim() : '';
+  if (!context || context.length > MAX_LIUREN_WORKFLOW_CONTEXT_LENGTH) {
+    return aiJsonError(
+      400,
+      'LIUREN_WORKFLOW_CONTEXT_INVALID',
+      `工作流上下文不能为空且不能超过 ${MAX_LIUREN_WORKFLOW_CONTEXT_LENGTH} 字符。`,
+    );
+  }
+  const completedReports = normalizeLiurenCompletedReports(body.completedReports);
+  if ('error' in completedReports) return completedReports.error;
+  const nextStepId = LIUREN_WORKFLOW_STEP_IDS[completedReports.reports.length];
+  if (!nextStepId) {
+    return aiJsonError(400, 'LIUREN_WORKFLOW_ALREADY_COMPLETE', '大六壬工作流已经完成。');
+  }
+  if (body.resumeFrom !== undefined && body.resumeFrom !== nextStepId) {
+    return aiJsonError(
+      400,
+      'LIUREN_WORKFLOW_RESUME_INVALID',
+      `只能从下一节点 ${nextStepId} 继续。`,
+    );
+  }
+
+  const provider = resolveAiProvider(body.aiConfig, env);
+  if ('error' in provider) return provider.error;
+  const remainingCost = LIUREN_WORKFLOW_STEP_IDS.length - completedReports.reports.length;
+  const rateLimitError = enforceBuiltinAiRateLimit(request, provider, env, runtime, remainingCost);
+  if (rateLimitError) return rateLimitError;
+
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+  const encoder = new TextEncoder();
+  const reports = [...completedReports.reports];
+
+  const emit = async (event: LiurenWorkflowSseEvent) => {
+    await writer.write(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+  };
+
+  void (async () => {
+    let activeStepId = nextStepId;
+    try {
+      for (
+        let index = completedReports.reports.length;
+        index < LIUREN_WORKFLOW_STEP_IDS.length;
+        index += 1
+      ) {
+        activeStepId = LIUREN_WORKFLOW_STEP_IDS[index];
+        const step = getLiurenWorkflowStep(activeStepId);
+        await emit({ type: 'step_start', stepId: activeStepId });
+        const content = await collectLiurenWorkflowCompletion(
+          provider,
+          step.systemPrompt,
+          buildLiurenWorkflowUserPrompt(activeStepId, context, reports),
+          step.maxTokens,
+          request.signal,
+          runtime,
+          env,
+          async (delta) => {
+            await emit({ type: 'step_delta', stepId: activeStepId, content: delta });
+          },
+          activeStepId === 'master'
+            ? MAX_LIUREN_MASTER_REPORT_LENGTH
+            : MAX_LIUREN_WORKFLOW_REPORT_LENGTH,
+        );
+        reports.push({ stepId: activeStepId, content });
+        await emit({ type: 'step_complete', stepId: activeStepId, content });
+      }
+      await emit({ type: 'workflow_complete' });
+    } catch (error) {
+      const workflowError = normalizeWorkflowError(error);
+      try {
+        await emit({
+          type: 'workflow_error',
+          stepId: activeStepId,
+          code: workflowError.code,
+          message: workflowError.message,
+          retryable: workflowError.retryable,
+        });
+      } catch {
+        // 客户端已断开。
+      }
+    } finally {
+      try {
+        await writer.close();
+      } catch {
+        // writer 已关闭。
+      }
+    }
+  })();
+
+  return new Response(readable, { status: 200, headers: SSE_HEADERS });
+}
+
+function normalizeLiurenCompletedReports(
+  value: unknown,
+): { reports: LiurenWorkflowReport[] } | { error: Response } {
+  if (value === undefined) return { reports: [] };
+  if (!Array.isArray(value) || value.length > LIUREN_WORKFLOW_STEP_IDS.length) {
+    return {
+      error: aiJsonError(400, 'LIUREN_WORKFLOW_REPORTS_INVALID', '已完成报告必须是有序节点数组。'),
+    };
+  }
+  const reports: LiurenWorkflowReport[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const item = value[index];
+    if (!item || typeof item !== 'object') {
+      return {
+        error: aiJsonError(400, 'LIUREN_WORKFLOW_REPORTS_INVALID', '已完成报告格式不正确。'),
+      };
+    }
+    const raw = item as { stepId?: unknown; content?: unknown };
+    const expectedStepId = LIUREN_WORKFLOW_STEP_IDS[index];
+    const content = typeof raw.content === 'string' ? raw.content.trim() : '';
+    const maxLength =
+      expectedStepId === 'master'
+        ? MAX_LIUREN_MASTER_REPORT_LENGTH
+        : MAX_LIUREN_WORKFLOW_REPORT_LENGTH;
+    if (
+      !isLiurenWorkflowStepId(raw.stepId) ||
+      raw.stepId !== expectedStepId ||
+      !content ||
+      content.length > maxLength
+    ) {
+      return {
+        error: aiJsonError(
+          400,
+          'LIUREN_WORKFLOW_REPORTS_INVALID',
+          `第 ${index + 1} 份报告缺失、顺序错误或内容过长。`,
+        ),
+      };
+    }
+    reports.push({ stepId: raw.stepId, content });
+  }
+  return { reports };
+}
+
+class LiurenWorkflowRunError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly retryable = true,
+  ) {
+    super(message);
+    this.name = 'LiurenWorkflowRunError';
+  }
+}
+
+function normalizeWorkflowError(error: unknown) {
+  if (error instanceof LiurenWorkflowRunError) return error;
+  if (error instanceof UpstreamStreamTimeoutError) {
+    return new LiurenWorkflowRunError('AI_UPSTREAM_TIMEOUT', 'AI 服务响应超时，请从当前步骤继续。');
+  }
+  if (isAbortError(error)) {
+    return new LiurenWorkflowRunError('AI_REQUEST_ABORTED', '工作流已停止。', true);
+  }
+  return new LiurenWorkflowRunError(
+    'LIUREN_WORKFLOW_FAILED',
+    error instanceof Error && error.message.trim()
+      ? error.message.trim()
+      : '大六壬工作流执行失败，请从当前步骤继续。',
+  );
+}
+
+async function readWorkflowErrorResponse(response: Response) {
+  try {
+    const payload = (await response.json()) as {
+      error?: { code?: unknown; message?: unknown; retryable?: unknown };
+    };
+    return new LiurenWorkflowRunError(
+      typeof payload.error?.code === 'string' ? payload.error.code : 'AI_UPSTREAM_ERROR',
+      typeof payload.error?.message === 'string'
+        ? payload.error.message
+        : 'AI 服务请求失败，请稍后继续。',
+      payload.error?.retryable !== false,
+    );
+  } catch {
+    return new LiurenWorkflowRunError('AI_UPSTREAM_ERROR', 'AI 服务请求失败，请稍后继续。');
+  }
+}
+
+async function collectLiurenWorkflowCompletion(
+  provider: ResolvedAiProvider,
+  systemPrompt: string,
+  userPrompt: string,
+  maxTokens: number,
+  signal: AbortSignal,
+  runtime: AiRuntime,
+  env: AiEnv | undefined,
+  onDelta: (delta: string) => Promise<void>,
+  maxContentLength: number,
+) {
+  const upstreamResult = await fetchUpstreamWithRetry(
+    `${provider.baseUrl}/chat/completions`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${provider.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: provider.model,
+        stream: true,
+        max_tokens: maxTokens,
+        temperature: 0.3,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+      }),
+      signal,
+    },
+    runtime,
+  );
+  if (upstreamResult.ok === false) throw await readWorkflowErrorResponse(upstreamResult.error);
+
+  const { response, controller, cleanup, attempts } = upstreamResult;
+  if (!response.ok) {
+    try {
+      const rawBody = await readUpstreamText(response, controller, runtime, env);
+      throw await readWorkflowErrorResponse(
+        buildUpstreamErrorResponse(response.status, rawBody, attempts),
+      );
+    } finally {
+      controller.abort();
+      cleanup();
+    }
+  }
+  if (!response.body) {
+    controller.abort();
+    cleanup();
+    throw new LiurenWorkflowRunError('AI_UPSTREAM_EMPTY_RESPONSE', 'AI 服务没有返回可读取的内容。');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const timeouts = getStreamTimeouts(runtime, env);
+  const deadline = Date.now() + timeouts.totalTimeoutMs;
+  let buffer = '';
+  let content = '';
+
+  const consumeLine = async (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('data:')) return;
+    const data = trimmed.slice(5).trim();
+    if (!data || data === '[DONE]') return;
+    try {
+      const parsed = JSON.parse(data);
+      const delta = parsed?.choices?.[0]?.delta?.content;
+      if (typeof delta !== 'string' || !delta) return;
+      if (content.length + delta.length > maxContentLength) {
+        throw new LiurenWorkflowRunError(
+          'LIUREN_WORKFLOW_OUTPUT_TOO_LONG',
+          '当前节点输出过长，已停止以避免污染后续上下文。',
+          false,
+        );
+      }
+      content += delta;
+      await onDelta(delta);
+    } catch (error) {
+      if (error instanceof LiurenWorkflowRunError) throw error;
+      // 忽略无法解析的上游事件。
+    }
+  };
+
+  try {
+    while (true) {
+      const { done, value } = await readStreamChunk(
+        reader,
+        controller,
+        timeouts.idleTimeoutMs,
+        deadline,
+      );
+      if (done) break;
+      if (!value) continue;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) await consumeLine(line);
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) await consumeLine(buffer);
+  } finally {
+    controller.abort();
+    cleanup();
+    void reader.cancel().catch(() => undefined);
+  }
+
+  const normalized = content.trim();
+  if (!normalized) {
+    throw new LiurenWorkflowRunError(
+      'AI_UPSTREAM_EMPTY_RESPONSE',
+      '当前节点没有返回内容，请从此步继续。',
+    );
+  }
+  return normalized;
+}
+
 export async function handleAiModels(
   request: Request,
   env?: AiEnv,
@@ -460,9 +815,10 @@ function enforceBuiltinAiRateLimit(
   provider: ResolvedAiProvider,
   env: AiEnv | undefined,
   runtime: AiRuntime,
+  cost = 1,
 ): Response | null {
   if (provider.mode !== 'builtin') return null;
-  const result = consumeBuiltinAiRateLimit(request, env, runtime.now?.() ?? Date.now());
+  const result = consumeBuiltinAiRateLimit(request, env, runtime.now?.() ?? Date.now(), cost);
   if (!result || result.allowed === true) return null;
 
   return aiJsonError(

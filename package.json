@@ -20,6 +20,7 @@
   "type": "module",
   "packageManager": "pnpm@11.9.0",
   "scripts": {
+    "predev": "pnpm --filter mingyu-core build",
     "dev": "vite",
     "build": "pnpm --filter mingyu-core build && node scripts/run-vite-build.mjs",
     "build:server": "pnpm --filter mingyu-core build && node scripts/run-vite-build.mjs --server",

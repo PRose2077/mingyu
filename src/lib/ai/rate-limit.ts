@@ -35,6 +35,7 @@ export function consumeBuiltinAiRateLimit(
   request: Request,
   env?: AiRateLimitEnv,
   now = Date.now(),
+  cost = 1,
 ): AiRateLimitResult | null {
   const clientAddress = normalizeClientAddress(request.headers.get(AI_CLIENT_ADDRESS_HEADER));
   if (!clientAddress) return null;
@@ -47,16 +48,26 @@ export function consumeBuiltinAiRateLimit(
     24 * 60 * 60,
   );
   const windowMs = windowSeconds * 1000;
+  const requestCost = Number.isInteger(cost) && cost > 0 ? cost : 1;
   const current = builtinAiClients.get(clientAddress);
 
   if (!current || current.resetAt <= now) {
     const resetAt = now + windowMs;
-    builtinAiClients.set(clientAddress, { count: 1, resetAt });
+    if (requestCost > limit) {
+      return {
+        allowed: false,
+        limit,
+        remaining: 0,
+        resetAt,
+        retryAfterSeconds: Math.max(1, Math.ceil(windowMs / 1000)),
+      };
+    }
+    builtinAiClients.set(clientAddress, { count: requestCost, resetAt });
     trimExpiredClients(now);
-    return { allowed: true, limit, remaining: Math.max(limit - 1, 0), resetAt };
+    return { allowed: true, limit, remaining: Math.max(limit - requestCost, 0), resetAt };
   }
 
-  if (current.count >= limit) {
+  if (current.count + requestCost > limit) {
     return {
       allowed: false,
       limit,
@@ -66,7 +77,7 @@ export function consumeBuiltinAiRateLimit(
     };
   }
 
-  current.count += 1;
+  current.count += requestCost;
   return {
     allowed: true,
     limit,

@@ -979,6 +979,198 @@
   display: block;
 }
 
+.liuren-workflow-panel {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  padding: 18px;
+}
+
+.divination-result-workspace.is-split .liuren-workflow-panel {
+  box-sizing: border-box;
+  height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.liuren-workflow-head,
+.liuren-workflow-progress,
+.liuren-workflow-inline-actions,
+.liuren-workflow-new-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.liuren-workflow-head h2,
+.liuren-workflow-head p,
+.liuren-manual-guide h3,
+.liuren-manual-guide p,
+.liuren-workflow-followup h3 {
+  margin: 0;
+}
+
+.liuren-workflow-head p,
+.liuren-workflow-choice p,
+.liuren-manual-guide p {
+  color: var(--text-muted);
+  line-height: 1.65;
+}
+
+.liuren-workflow-landing {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.liuren-workflow-choice {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid color-mix(in srgb, var(--accent-strong) 26%, var(--border-soft));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--accent-strong) 5%, var(--surface-base));
+}
+
+.liuren-workflow-choice.is-manual {
+  border-color: var(--border-soft);
+  background: var(--surface-base);
+}
+
+.liuren-workflow-history {
+  display: flex;
+  gap: 7px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.liuren-workflow-history button {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--surface-base);
+  cursor: pointer;
+}
+
+.liuren-workflow-history button.is-active {
+  border-color: var(--accent-strong);
+  color: var(--accent-deep);
+  background: color-mix(in srgb, var(--accent-strong) 8%, var(--surface-base));
+}
+
+.liuren-workflow-progress {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent-strong) 6%, var(--surface-base));
+}
+
+.liuren-workflow-error {
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, #c14343 42%, var(--border-soft));
+  border-radius: 10px;
+  color: #a83030;
+  background: color-mix(in srgb, #c14343 7%, var(--surface-base));
+}
+
+.liuren-workflow-steps {
+  display: grid;
+  gap: 8px;
+}
+
+.liuren-workflow-steps details {
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--surface-base);
+}
+
+.liuren-workflow-steps summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 12px;
+  cursor: pointer;
+}
+
+.liuren-workflow-steps summary span,
+.liuren-workflow-steps summary em {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.liuren-workflow-report,
+.liuren-workflow-step-placeholder {
+  margin: 0;
+  padding: 12px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.liuren-workflow-report textarea,
+.liuren-manual-guide textarea {
+  box-sizing: border-box;
+  width: 100%;
+  resize: vertical;
+  padding: 11px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  color: var(--text-primary);
+  background: var(--surface-page);
+  font: inherit;
+  line-height: 1.6;
+}
+
+.liuren-workflow-report.is-streaming {
+  min-height: 70px;
+}
+
+.liuren-manual-guide {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent-strong) 30%, var(--border-soft));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--accent-strong) 4%, var(--surface-base));
+}
+
+.liuren-manual-prompt {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace !important;
+  font-size: 13px !important;
+}
+
+.liuren-workflow-followup {
+  display: grid;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-soft);
+}
+
+@media (max-width: 680px) {
+  .liuren-workflow-landing {
+    grid-template-columns: 1fr;
+  }
+
+  .liuren-workflow-head,
+  .liuren-workflow-new-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .liuren-workflow-steps summary {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .liuren-workflow-steps summary em {
+    grid-column: 2;
+  }
+}
+
 @media (min-width: 980px) {
   .workspace-shell {
     height: 100dvh;

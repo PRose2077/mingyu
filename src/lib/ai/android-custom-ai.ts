@@ -23,6 +23,9 @@ interface AndroidDirectAiPlugin {
     baseUrl: string;
     model: string;
     messages: DirectChatMessage[];
+    systemPrompt?: string;
+    temperature?: number;
+    maxTokens?: number;
   }): Promise<void>;
   cancelStream(options: { requestId: string }): Promise<void>;
   fetchModels(options: { apiKey: string; baseUrl: string }): Promise<{ models: string[] }>;
@@ -37,6 +40,12 @@ interface DirectStreamCallbacks {
   onDone: () => void;
   onError: (message: string) => void;
 }
+
+export type AndroidDirectAiRequestOptions = {
+  systemPrompt?: string;
+  temperature?: number;
+  maxTokens?: number;
+};
 
 const AndroidDirectAi = registerPlugin<AndroidDirectAiPlugin>('AndroidDirectAi');
 const BLOCKED_HOSTS = new Set(['localhost', 'metadata', 'metadata.google.internal']);
@@ -89,6 +98,7 @@ export async function streamAndroidDirectAi(
   aiConfig: AiRequestConfig,
   callbacks: DirectStreamCallbacks,
   signal?: AbortSignal,
+  requestOptions: AndroidDirectAiRequestOptions = {},
 ): Promise<void> {
   const config = normalizeAndroidDirectAiConfig(aiConfig);
   const requestId = createRequestId();
@@ -142,7 +152,7 @@ export async function streamAndroidDirectAi(
   signal?.addEventListener('abort', handleAbort, { once: true });
 
   try {
-    await AndroidDirectAi.streamChat({ requestId, ...config, messages });
+    await AndroidDirectAi.streamChat({ requestId, ...config, messages, ...requestOptions });
   } catch (error) {
     callbacks.onError(formatNativeError(error, '无法从当前设备直连自定义 AI。'));
     finish();
