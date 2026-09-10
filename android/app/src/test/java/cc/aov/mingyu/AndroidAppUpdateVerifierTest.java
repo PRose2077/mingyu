@@ -63,31 +63,48 @@ public class AndroidAppUpdateVerifierTest {
     }
 
     @Test
-    public void acceptsOnlyTheFourOfficialApkRoutes() throws Exception {
+    public void acceptsOnlyTheGithubApkRouteForGithubChecksums() throws Exception {
         URL checksum = new URL(
             "https://github.com/Brhiza/mingyu/releases/download/android-v1.2.3/mingyu-1.2.3.apk.sha256"
         );
         String github = "https://github.com/Brhiza/mingyu/releases/download/android-v1.2.3/mingyu-1.2.3.apk";
         assertEquals("github.com", AndroidAppUpdateVerifier.requireOfficialApkUrl(github, checksum).getHost());
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> AndroidAppUpdateVerifier.requireOfficialApkUrl(
+                "https://downloads.example.com/mingyu-1.2.3.apk",
+                checksum
+            )
+        );
+    }
+
+    @Test
+    public void acceptsTheVersionedOfficialCdnRoute() throws Exception {
+        URL checksum = AndroidAppUpdateVerifier.requireReleaseAssetUrl(
+            "https://download.aov.cc/apps/mingyu/android/1.2.3/mingyu-1.2.3.apk.sha256",
+            ".sha256"
+        );
+        URL apk = AndroidAppUpdateVerifier.requireOfficialApkUrl(
+            "https://download.aov.cc/apps/mingyu/android/1.2.3/mingyu-1.2.3.apk",
+            checksum
+        );
+        assertEquals("download.aov.cc", apk.getHost());
         assertEquals(
-            "lanzou-cloudflare-api.brhiza.workers.dev",
+            "github.com",
             AndroidAppUpdateVerifier.requireOfficialApkUrl(
-                "https://lanzou-cloudflare-api.brhiza.workers.dev/v1/public/mingyu/1.2.3",
+                "https://github.com/Brhiza/mingyu/releases/download/android-v1.2.3/mingyu-1.2.3.apk",
                 checksum
             ).getHost()
         );
-        assertEquals(
-            "gh-proxy.com",
-            AndroidAppUpdateVerifier.requireOfficialApkUrl("https://gh-proxy.com/" + github, checksum).getHost()
-        );
-        assertEquals(
-            "ghfast.top",
-            AndroidAppUpdateVerifier.requireOfficialApkUrl("https://ghfast.top/" + github, checksum).getHost()
+        assertTrue(
+            AndroidAppUpdateVerifier.isAllowedRedirectUrl(
+                new URL("https://download.aov.cc/apps/mingyu/android/1.2.3/mingyu-1.2.3.apk")
+            )
         );
         assertThrows(
             IllegalArgumentException.class,
             () -> AndroidAppUpdateVerifier.requireOfficialApkUrl(
-                "https://lanzou-cloudflare-api.brhiza.workers.dev/v1/public/mingyu/1.2.4",
+                "https://download.aov.cc/apps/mingyu/android/1.2.4/mingyu-1.2.4.apk",
                 checksum
             )
         );

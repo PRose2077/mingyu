@@ -19,6 +19,7 @@ export * from './current-time';
 export * from './divination';
 export * from './divination-enhanced';
 export * from './divination-detail';
+export * from './framework';
 export * from './formatters';
 export * from './guidance';
 export * from './inspiration';
@@ -29,6 +30,7 @@ export * from './schools';
 export * from './tarot-spread';
 export * from './types';
 export * from './ziwei';
+export * from './thematic';
 export {
   buildCombinedZiweiCompatibilityPrompt,
   buildCombinedZiweiPrompt,

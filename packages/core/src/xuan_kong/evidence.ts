@@ -14,11 +14,27 @@ export interface XuanKongEvidenceSourceResult {
   };
   sitMountain: string;
   facingMountain: string;
-  plates: { yun: number[]; shan: number[]; xiang: number[] };
+  plates: { yun: number[]; shan: number[]; xiang: number[]; year?: number[]; month?: number[] };
+  palaces?: Array<{
+    gong: number;
+    name: string;
+    yunStar: number;
+    shanStar: number;
+    xiangStar: number;
+    yearStar?: number;
+    monthStar?: number;
+    shanXiangRelation: string;
+    yunStarState: string;
+  }>;
+  flowStars?: {
+    yearPlate: { year: number; starName: string; centerStar: number; calendarNote: string };
+    monthPlate?: { starName: string; centerStar: number; calendarNote: string };
+  };
   formation: string;
   combinations: Array<{ name: string; kind: string; palaces?: number[]; note: string }>;
   engine: { name: string; version: string; mode: string };
   daoShanXiang: { summary: string };
+  castleGate?: { summary: string };
   measurement?: { stability: string };
 }
 
@@ -68,6 +84,10 @@ const FACT_LIMIT = '飞星事实记录当运、山向飞布与到山到向结构
 const COUNTER_LIMIT = '反证用于提示测量边界和输入限制';
 const LIMIT_LIMIT = '限制事实用于界定玄空飞星 v1 的输出范围';
 
+function formatFlowYear(year: number): string {
+  return year === 0 ? '公元前1' : String(year);
+}
+
 export function analyzeXuanKongEvidence(
   result: XuanKongEvidenceSourceResult,
 ): XuanKongEvidenceAnalysis {
@@ -83,7 +103,7 @@ export function analyzeXuanKongEvidence(
       key: 'xuankong:calculation:mountain',
       stage: '定山向',
       promptText: `坐山${result.sitMountain}，朝向${result.facingMountain}，采用下卦`,
-      sources: ['二十四山罗盘换算', '下卦中央九度边界规则'],
+      sources: ['二十四山罗盘换算', '显式下卦计算（起替条件另行核定）'],
       limitation: STEP_LIMIT,
     },
     {
@@ -120,13 +140,49 @@ export function analyzeXuanKongEvidence(
       sources: ['三盘中宫飞星'],
       limitation: FACT_LIMIT,
     },
+    ...(result.palaces ?? []).map((palace) => ({
+      key: `xuankong:fact:palace:${palace.gong}`,
+      type: '宫位组合',
+      promptText: `${palace.name}运${palace.yunStar}山${palace.shanStar}向${palace.xiangStar}${
+        palace.yearStar !== undefined ? `年${palace.yearStar}` : ''
+      }${palace.monthStar !== undefined ? `月${palace.monthStar}` : ''}，山向${palace.shanXiangRelation}，运星${palace.yunStarState}`,
+      sources: ['三盘飞星与九星五行生克'],
+      limitation: FACT_LIMIT,
+    })),
   ];
+  if (result.flowStars) {
+    facts.push({
+      key: 'xuankong:fact:year-star',
+      type: '流年飞星',
+      promptText: `${formatFlowYear(result.flowStars.yearPlate.year)}年${result.flowStars.yearPlate.starName}入中；${result.flowStars.yearPlate.calendarNote}`,
+      sources: ['三元紫白年星', 'tyme4ts 干支年九星'],
+      limitation: FACT_LIMIT,
+    });
+    if (result.flowStars.monthPlate) {
+      facts.push({
+        key: 'xuankong:fact:month-star',
+        type: '流月飞星',
+        promptText: `${result.flowStars.monthPlate.starName}入中；${result.flowStars.monthPlate.calendarNote}`,
+        sources: ['节气月紫白', 'tyme4ts 节气月九星'],
+        limitation: FACT_LIMIT,
+      });
+    }
+  }
   for (const combination of result.combinations) {
     facts.push({
       key: `xuankong:fact:combination:${combination.name}`,
       type: '组合互参',
       promptText: `${combination.name}${combination.palaces?.length ? `（宫位 ${combination.palaces.join('、')}）` : ''}：${combination.note}`,
       sources: [`${result.engine.name}@${result.engine.version} 组合检测`],
+      limitation: FACT_LIMIT,
+    });
+  }
+  if (result.castleGate) {
+    facts.push({
+      key: 'xuankong:fact:castle-gate',
+      type: '城门诀',
+      promptText: result.castleGate.summary,
+      sources: ['《沈氏玄空学》城门诀规则'],
       limitation: FACT_LIMIT,
     });
   }
@@ -146,7 +202,9 @@ export function analyzeXuanKongEvidence(
     {
       key: 'xuankong:limitation:scope',
       type: '体系边界',
-      promptText: '当前输出下卦运盘、山盘、向盘、局型与已登记组合',
+      promptText: result.flowStars
+        ? '当前输出下卦运盘、山盘、向盘、流年流月飞星、局型与已登记组合'
+        : '当前输出下卦运盘、山盘、向盘、局型与已登记组合',
       sources: ['项目玄空飞星范围声明'],
       limitation: LIMIT_LIMIT,
     },

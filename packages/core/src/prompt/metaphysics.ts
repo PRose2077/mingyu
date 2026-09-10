@@ -3,6 +3,11 @@ import { buildPromptDocument, buildPromptSection, joinPromptSections } from './s
 import { buildPromptGuidance, buildPromptTask } from './guidance';
 import { buildPromptSchoolSection } from './schools';
 import type { PromptBuildOptions, PromptDocument } from './types';
+import {
+  buildPromptSelectionTask,
+  getPromptSelectionSection,
+  requirePromptSelection,
+} from './framework';
 
 export const METAPHYSICS_PROMPT_METHODS = [
   'bazhai',
@@ -19,6 +24,9 @@ export interface MetaphysicsPromptOptions extends PromptBuildOptions {
   method: MetaphysicsPromptMethod;
   measurement?: string;
   schools?: readonly string[];
+  topicId?: string;
+  subtopicId?: string;
+  scope?: string;
 }
 
 /**
@@ -31,23 +39,53 @@ export function buildMetaphysicsPromptDocument(
   options: MetaphysicsPromptOptions,
 ): PromptDocument {
   const normalizedBase = basePrompt.trim();
+  const selection =
+    options.topicId !== undefined || options.subtopicId !== undefined || options.scope !== undefined
+      ? requirePromptSelection({
+          methodId: options.method,
+          topicId: options.topicId,
+          subtopicId: options.subtopicId,
+          scope: options.scope,
+        })
+      : undefined;
   const baseSection = normalizedBase.startsWith('【')
     ? normalizedBase
     : buildPromptSection('排盘资料', normalizedBase);
 
   const sections = [
     buildPromptGuidance(options.method),
-    buildPromptSection('当前时间', formatPromptCurrentTime(options.currentTime)),
+    buildPromptSection(
+      '当前时间',
+      [
+        options.method === 'zodiac'
+          ? '时间身份：本节为提问时点的历法背景；生肖流年关系的参与资料为下列出生年支与目标流年干支。'
+          : '',
+        formatPromptCurrentTime(options.currentTime),
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    ),
     baseSection,
     options.measurement ? buildPromptSection('测量换算', options.measurement) : '',
     buildPromptSchoolSection(options.method, options.schools),
-    buildPromptSection(
-      '任务',
-      buildPromptTask(
-        question?.trim() ? '请结合以上资料回答【问题】。' : '请结合以上资料完成解读。',
-        options.method,
-      ),
-    ),
+    selection ? buildPromptSection('解读选择', getPromptSelectionSection(selection)) : '',
+    options.method === 'zodiac' && /^【任务】$/m.test(normalizedBase)
+      ? ''
+      : buildPromptSection(
+          '任务',
+          selection
+            ? buildPromptSelectionTask(
+                buildPromptTask(
+                  question?.trim() ? '请结合以上资料回答【问题】。' : '请结合以上资料完成解读。',
+                  options.method,
+                ),
+                selection,
+              )
+            : buildPromptTask(
+                question?.trim() ? '请结合以上资料回答【问题】。' : '请结合以上资料完成解读。',
+                options.method,
+              ),
+        ),
     question?.trim() ? buildPromptSection('问题', question) : '',
   ];
 

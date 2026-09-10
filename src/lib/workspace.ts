@@ -4,7 +4,14 @@ import { safeStorage } from '@/lib/safe-storage';
 import type { PromptSourceKey, QueryInputState } from '@/lib/query-state';
 
 export type ChartWorkspaceId =
-  'bazi' | 'ziwei' | 'bazi-ziwei' | 'astrolabe' | 'qizheng' | 'bazhai' | 'compatibility';
+  | 'bazi'
+  | 'ziwei'
+  | 'bazi-ziwei'
+  | 'qimen-lifetime'
+  | 'astrolabe'
+  | 'qizheng'
+  | 'bazhai'
+  | 'compatibility';
 
 export type DivinationWorkspaceId = Exclude<DivinationMethodId, 'astrolabe' | 'random'>;
 export type WorkspaceFeatureId = ChartWorkspaceId | DivinationWorkspaceId;
@@ -80,6 +87,14 @@ const chartFeatures: WorkspaceFeature[] = [
     group: 'chart',
   },
   {
+    id: 'qimen-lifetime',
+    label: '奇门终身局',
+    shortLabel: '奇门',
+    mark: '奇',
+    description: '本命盘、六亲主题与阶段运限',
+    group: 'chart',
+  },
+  {
     id: 'astrolabe',
     label: '西洋星盘',
     shortLabel: '星盘',
@@ -123,6 +138,8 @@ const divinationMarks: Record<DivinationWorkspaceId, string> = {
   taiyi: '太',
   huangji: '皇',
   ssgw: '签',
+  zhuge: '诸',
+  kongming: '孔',
   tarot: '塔',
   lenormand: '雷',
   almanac: '日',
@@ -316,6 +333,9 @@ export function resolvePersonalWorkspaceSource(
   }
   if (chartType === 'ziwei') {
     return 'ziwei';
+  }
+  if (storedSource === 'qimen-lifetime') {
+    return 'qimen-lifetime';
   }
   return storedSource === 'bazi-ziwei' || storedSource === 'bazhai' ? storedSource : 'bazi';
 }

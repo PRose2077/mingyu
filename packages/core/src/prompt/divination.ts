@@ -1,4 +1,6 @@
+import { formatLiurenLesson, formatLiurenTransmission } from './liuren-facts';
 import { buildTaskText } from '../divination/engine/method-text';
+import { formatJinkoujueRelations, formatJinkoujueMovementRules } from './jinkoujue-facts';
 import { buildLiurenTemplateText } from '../divination/engine/liuren-template';
 import { buildLiuyaoTemplateText } from '../divination/engine/liuyao-template';
 import type { DivinationMethodId } from '../divination/config';
@@ -31,13 +33,20 @@ import { buildPromptGuidance, buildPromptTask } from './guidance';
 import { buildPromptDocument, buildPromptSection, joinPromptSections } from './sections';
 import { buildPromptSchoolSection, type PromptSchoolMethod } from './schools';
 import type { AstrolabePromptTopic } from './astrolabe';
+import type { KongmingHexagramResult, ZhugeNumberResult } from '../name-number';
 import type { PromptBuildOptions, PromptDocument } from './types';
-import { formatEnhancedDivinationInfo } from './divination-enhanced';
+import { formatEnhancedDivinationInfo, formatTaiyiTradition } from './divination-enhanced';
 import { resolveSsgwStoryContent } from '../divination/ssgw-content';
 import { buildSolarTimeInfoText, buildTimeInfoText } from './formatters';
 import { buildTarotSpreadTask } from './tarot-spread';
 import type { HuangjiJingshiResult } from '../huangji-jingshi';
 import { formatHuangjiCivilYear } from '../huangji-jingshi/standard';
+import {
+  buildPromptSelectionTask,
+  getPromptSelectionSection,
+  requirePromptSelection,
+  type PromptSelection,
+} from './framework';
 
 export interface DivinationSummaryBlocks {
   title: string;
@@ -85,13 +94,41 @@ function formatLiuyaoFocusSummary(data: LiuyaoData) {
   const worldYao = data.yaosDetail?.find((item) => item.isWorld);
   const responseYao = data.yaosDetail?.find((item) => item.isResponse);
   const changing = data.yaosDetail?.filter((item) => item.isChanging) ?? [];
+  const monthBreakYaos = data.yaosDetail?.filter((item) => item.isMonthBreak) ?? [];
+  const hiddenMoveYaos = data.yaosDetail?.filter((item) => item.isHiddenMove) ?? [];
+  const dayBreakYaos = data.yaosDetail?.filter((item) => item.isDayBreak) ?? [];
+
   const parts = [
     worldYao ? `世爻第${worldYao.position}爻` : '',
     responseYao ? `应爻第${responseYao.position}爻` : '',
   ].filter(Boolean);
+
+  const changingDesc = changing.map((item) => {
+    const dir = item.changeDirection ? `（${item.changeDirection}）` : '';
+    return `第${item.position}爻${dir}`;
+  });
+
+  const specialYaos: string[] = [];
+  if (monthBreakYaos.length) {
+    specialYaos.push(
+      `月破：${monthBreakYaos.map((y) => `第${y.position}爻${y.najiaDizhi}`).join('、')}`,
+    );
+  }
+  if (hiddenMoveYaos.length) {
+    specialYaos.push(
+      `暗动：${hiddenMoveYaos.map((y) => `第${y.position}爻${y.najiaDizhi}`).join('、')}`,
+    );
+  }
+  if (dayBreakYaos.length) {
+    specialYaos.push(
+      `日破：${dayBreakYaos.map((y) => `第${y.position}爻${y.najiaDizhi}`).join('、')}`,
+    );
+  }
+
   return [
     parts.length ? `世应：${parts.join('，')}` : '',
-    `动变：${changing.map((item) => `第${item.position}爻`).join('、') || '无动爻'}`,
+    `动变：${changingDesc.join('、') || '无动爻'}`,
+    specialYaos.join('；'),
   ]
     .filter(Boolean)
     .join('；');
@@ -286,7 +323,8 @@ export function getDivinationSummaryBlocks(
           `动爻：${item.movements.map((movement) => `${movement.name}（${movement.trigger}）`).join('、') || '未触发五动或三动'}`,
           `月将贵人：月将${item.monthLeader}；${item.dayNight}贵人起${item.noblemanBranch}${item.calculation.noblemanDirection}`,
           `四位：地分${positions.diFen.branch}；将神${positions.jiangShen.branch}；贵神${positions.guiShen.branch}；人元${positions.renYuan.branch}`,
-          `四位关系：贵将${item.relations.guiToJiang}；贵人${item.relations.guiToRen}；将地${item.relations.jiangToDi}`,
+          formatJinkoujueRelations(item),
+          formatJinkoujueMovementRules(),
           item.xunKong.length ? `旬空：${item.xunKong.join('、')}` : '',
           item.summary,
         ].filter(Boolean),
@@ -333,8 +371,8 @@ export function getDivinationSummaryBlocks(
           `日干寄宫：${item.dayStemResidence ? `${item.ganzhi.day.charAt(0)}寄${item.dayStemResidence}` : '未知'}`,
           `旬空：${item.xunKong?.length ? item.xunKong.join('、') : '未知'}`,
           `取传法：${item.transmissionRule || '未记录'}；传态：${item.transmissionPattern || '未记录'}`,
-          `四课：${item.fourLessons.map((lesson) => `${lesson.name}${lesson.upper}/${lesson.lower}${lesson.relation}`).join('；')}`,
-          `三传：${item.threeTransmissions.map((transmission) => `${transmission.stage}${transmission.branch}乘${transmission.god}`).join(' → ')}`,
+          `四课：${item.fourLessons.map(formatLiurenLesson).join('；')}`,
+          `三传：${item.threeTransmissions.map((_, index) => formatLiurenTransmission(item, index)).join(' → ')}`,
           `课体：${item.guaTi?.join('、') || '无'}`,
           `神煞：${item.shenShaSummary?.length ? item.shenShaSummary.join('；') : '无'}`,
           ...formatLiurenDetailSummary(item),
@@ -381,6 +419,27 @@ export function getDivinationSummaryBlocks(
             )
             .map(([key, value]) => `${key}：${value}`),
         ].filter(Boolean),
+      };
+    }
+    case 'zhuge': {
+      const item = data as ZhugeNumberResult;
+      return {
+        title: '诸葛神数结果',
+        tags: [`三字：${item.text}`, `签序：第${item.number}签`],
+        lines: [
+          `康熙笔画：${item.strokes.join('、')}`,
+          `取数：${item.digits.join('')}`,
+          `签诗：${item.sign.poem}`,
+          `基础解意：${item.sign.summary}`,
+        ],
+      };
+    }
+    case 'kongming': {
+      const item = data as KongmingHexagramResult;
+      return {
+        title: '孔明神卦结果',
+        tags: [`卦象：${item.symbol}`, `卦名：${item.name}`, `等第：${item.grade}`],
+        lines: [`卦诗：${item.poem}`],
       };
     }
     case 'almanac': {
@@ -575,6 +634,9 @@ export interface DivinationPromptOptions extends PromptBuildOptions {
   astrolabeTopic?: AstrolabePromptTopic;
   astrolabeScopeText?: string;
   schools?: readonly string[];
+  topicId?: string;
+  subtopicId?: string;
+  scope?: string;
 }
 
 function formatSsgwPrompt(data: SsgwData) {
@@ -608,16 +670,30 @@ function formatSsgwPrompt(data: SsgwData) {
     details['吉凶'] ? `吉凶级别：${details['吉凶']}` : '',
     storyContent.canonicalStory ? `典故：${storyContent.canonicalStory}` : '',
     baseExplanation ? `基础解签：${baseExplanation}` : '',
-    supplementary.length
-      ? `补充解释：\n${supplementary.map((line) => `- ${line}`).join('\n')}`
-      : '',
+    supplementary.length ? `补充解释：\n${supplementary.join('\n')}` : '',
   ]
     .filter(Boolean)
     .join('\n');
 }
 
 export function buildDivinationPromptDocument(options: DivinationPromptOptions): PromptDocument {
+  const promptMethodId = options.method === 'huangji' ? 'huangji-jingshi' : options.method;
+  const hasPromptSelection =
+    options.topicId !== undefined ||
+    options.subtopicId !== undefined ||
+    options.scope !== undefined;
+  const selection: PromptSelection | undefined = hasPromptSelection
+    ? requirePromptSelection({
+        methodId: promptMethodId,
+        topicId: options.topicId,
+        subtopicId: options.subtopicId,
+        scope: options.scope,
+      })
+    : undefined;
   if (options.method === 'ssgw') {
+    if (selection) {
+      throw new Error('三山国王灵签提示词只接受本次签谱资料，不支持通用主题选择。');
+    }
     return buildPromptDocument(formatSsgwPrompt(options.data as SsgwData));
   }
 
@@ -625,17 +701,22 @@ export function buildDivinationPromptDocument(options: DivinationPromptOptions):
   const liuyaoTemplate = options.liuyaoTemplate ?? 'general';
   const liurenTemplate = options.liurenTemplate ?? 'general';
   const astrolabeTopic = options.astrolabeTopic ?? 'life';
-  const task =
+  const hasAstrolabePeriod = Boolean(
+    options.astrolabeScopeText &&
+    /周期关键星象|行运取样|主要行运相位/.test(options.astrolabeScopeText),
+  );
+  const baseTask =
     options.method === 'astrolabe' && !options.isCustomQuestion
       ? buildPromptTask(
           `请依据星体、宫位、相位和盘面证据，重点分析${ASTROLABE_TOPIC_LABELS[astrolabeTopic]}并回答【问题】。`,
-          'astrolabe',
+          hasAstrolabePeriod ? 'astrolabe' : 'astrolabe-natal',
         )
       : options.method === 'tarot'
         ? buildTarotSpreadTask(options.data as TarotData)
         : options.method === 'lenormand' && (options.data as LenormandData).cards.length === 1
           ? buildPromptTask('依据唯一牌位与基础牌义回答【问题】。', 'lenormand-single')
-          : buildTaskText(options.method);
+          : buildTaskText(options.method, options.data);
+  const task = selection ? buildPromptSelectionTask(baseTask, selection) : baseTask;
   const templateText =
     options.method === 'liuyao'
       ? buildLiuyaoTemplateText(liuyaoTemplate)
@@ -651,7 +732,10 @@ export function buildDivinationPromptDocument(options: DivinationPromptOptions):
         ? buildPromptSection('传统依据', '雷诺曼单牌以当前牌位、基础牌义和问题语境为主要资料。')
         : '';
   const user = joinPromptSections([
-    singleCardGuidance || buildPromptGuidance(options.method),
+    singleCardGuidance ||
+      (options.method === 'taiyi'
+        ? buildPromptSection('传统依据', formatTaiyiTradition(options.data as TaiyiResult))
+        : buildPromptGuidance(options.method)),
     buildPromptSection('当前时间', formatPromptCurrentTime(options.currentTime)),
     supplementaryText ? buildPromptSection('补充信息', supplementaryText) : '',
     options.astrolabeScopeText ? buildPromptSection('分析对象', options.astrolabeScopeText) : '',
@@ -662,6 +746,7 @@ export function buildDivinationPromptDocument(options: DivinationPromptOptions):
       }),
     ),
     buildPromptSchoolSection(promptSchoolMethod as PromptSchoolMethod, options.schools),
+    selection ? buildPromptSection('解读选择', getPromptSelectionSection(selection)) : '',
     templateText ? buildPromptSection('问题范围', templateText) : '',
     buildPromptSection('任务', task),
     buildPromptSection('问题', question),

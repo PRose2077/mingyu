@@ -1,5 +1,5 @@
 import type { BaziChartResult } from './baziTypes';
-import { WUXING } from '../wuxing';
+import { WUXING, isSheng, isKe } from '../wuxing';
 
 interface FormatBaziOptions {
   includeRules?: boolean;
@@ -80,6 +80,44 @@ function formatWuxingSeasonStatus(baziResult: BaziChartResult): string {
     .join(' ');
 }
 
+function formatElementRelations(baziResult: BaziChartResult): string {
+  const dayElement = baziResult.dayMaster.element;
+  const roles = new Map<string, string>(
+    WUXING.map((element) => [
+      element,
+      element === dayElement
+        ? '日主、比劫'
+        : isSheng(dayElement, element)
+          ? '食伤'
+          : isKe(dayElement, element)
+            ? '财星'
+            : isKe(element, dayElement)
+              ? '官杀'
+              : '印星',
+    ]),
+  );
+  const label = (element: string) => `${roles.get(element)}${element}`;
+  const generating: string[] = [];
+  const controlling: string[] = [];
+  for (const source of WUXING) {
+    for (const target of WUXING) {
+      if (isSheng(source, target)) {
+        generating.push(`${label(source)}生${label(target)}，${label(target)}泄${label(source)}`);
+      }
+      if (isKe(source, target)) {
+        controlling.push(`${label(source)}克${label(target)}`);
+      }
+    }
+  }
+  return [
+    '【五行作用方向】',
+    `以日主${baziResult.dayMaster.gan}${dayElement}为十神参照：`,
+    ...generating,
+    ...controlling,
+    '以上为五行直接生克方向；作用强弱与成败结合月令、根气、透藏和制化条件判断。',
+  ].join('\n');
+}
+
 function formatSolarDateTime(value: {
   year: number;
   month: number;
@@ -156,11 +194,13 @@ function buildBaziText(baziResult: BaziChartResult, options: FormatBaziOptions):
     result += `夏令时校正: ${baziResult.timing.dstCorrectionMinutes} 分钟\n`;
   }
   result += `日元本命: ${dayMaster.gan}${dayMaster.element} (${dayMaster.yinYang})\n`;
+  if (hiddenStems.month?.[0]) result += `月支本气: ${hiddenStems.month[0]}\n`;
   if (baziResult.monthCommander) result += `月令司权: ${baziResult.monthCommander}\n`;
   const birthSeason = formatBirthSeason(baziResult);
   if (birthSeason) result += `节令: ${birthSeason}\n`;
   const wuxingSeasonStatus = formatWuxingSeasonStatus(baziResult);
   if (wuxingSeasonStatus) result += `月令旺相: ${wuxingSeasonStatus}\n`;
+  result += `\n${formatElementRelations(baziResult)}\n`;
 
   result += '\n【核心判断】\n';
   const analysis = baziResult.analysis;
@@ -202,6 +242,9 @@ function buildBaziText(baziResult: BaziChartResult, options: FormatBaziOptions):
     if (includeRules && analysis.usefulGod.primaryReason) {
       result += `取用主线: ${analysis.usefulGod.primaryReason}\n`;
       result += `取用依据: 以${analysis.usefulGod.primaryReason}为主，结合旺衰${analysis.dayMasterStrength.status}与格局${analysis.mingGe.pattern}综合取用\n`;
+    }
+    if (includeRules && baziResult.climate && baziResult.climate.nature !== '中和') {
+      result += `调候特征: ${baziResult.climate.summary}\n`;
     }
   }
 

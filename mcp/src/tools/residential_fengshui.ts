@@ -49,7 +49,13 @@ const residentialSchema = z.object({
     .describe('指南针读数的北向基准'),
   magneticDeclinationDegrees: z.number().min(-30).max(30).optional().describe('当地磁偏角'),
   measurementUncertaintyDegrees: z.number().min(0).max(45).optional().describe('测量可能误差'),
+  flowYear: z.number().int().min(1).max(9999).optional().describe('流年公元年'),
+  flowMonth: z.number().int().min(1).max(12).optional().describe('流月公历月'),
+  flowDay: z.number().int().min(1).max(31).optional().describe('流月日期'),
   question: z.string().optional().describe('希望 AI 重点解读的问题'),
+  topicId: z.string().optional().describe('统一解读主题 ID'),
+  subtopicId: z.string().optional().describe('统一解读主题细项 ID'),
+  scope: z.string().optional().describe('统一分析范围 ID'),
 });
 
 function calculateResidential(args: z.infer<typeof residentialSchema>) {
@@ -74,6 +80,9 @@ function calculateResidential(args: z.infer<typeof residentialSchema>) {
     ...(args.measurementUncertaintyDegrees !== undefined
       ? { measurementUncertaintyDegrees: args.measurementUncertaintyDegrees }
       : {}),
+    ...(args.flowYear !== undefined ? { flowYear: args.flowYear } : {}),
+    ...(args.flowMonth !== undefined ? { flowMonth: args.flowMonth } : {}),
+    ...(args.flowDay !== undefined ? { flowDay: args.flowDay } : {}),
   });
 }
 
@@ -114,6 +123,9 @@ export function registerResidentialFengshuiTool(server: McpServer) {
           prompt: buildMetaphysicsPrompt(result.prompt, args.question, {
             method: 'residential',
             schools: args.schools,
+            topicId: args.topicId,
+            subtopicId: args.subtopicId,
+            scope: args.scope,
           }),
         });
       } catch (error) {

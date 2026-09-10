@@ -41,10 +41,14 @@ import { tarotSpreads } from 'mingyu-core/divination/tarot';
 import { LENORMAND_SPREADS } from 'mingyu-core/divination/lenormand';
 import { secureRandomInt } from 'mingyu-core/random';
 import {
+  buildPromptSelectionTask,
+  getPromptSelectionSection,
   formatPromptSchoolGuidance,
   getPromptSchoolSectionTitle,
   normalizePromptSchoolIds,
   buildTarotSpreadTask,
+  requirePromptSelection,
+  type PromptSelection,
   type PromptSchoolMethod,
 } from 'mingyu-core/prompt';
 
@@ -63,6 +67,20 @@ const CONCRETE_DIVINATION_METHODS: Array<Exclude<DivinationMethodId, 'random'>> 
 
 function buildLiurenAnalysisObjectText(_data: LiurenData) {
   return '大六壬起课盘';
+}
+
+function applyPromptSelectionToExistingPrompt(prompt: string, selection?: PromptSelection) {
+  if (!selection) return prompt;
+  const taskMatch = /【任务】\n([\s\S]*?)(?=\n\n【|$)/u.exec(prompt);
+  const task = taskMatch?.[1]?.trim() || '请依据以上盘面资料完成解读。';
+  const selectedTask = buildPromptSelectionTask(task, selection);
+  const updated = taskMatch
+    ? prompt.replace(taskMatch[0], `【任务】\n${selectedTask}`)
+    : `${prompt.trim()}\n\n【任务】\n${selectedTask}`;
+  const selectionSection = `【解读选择】\n${getPromptSelectionSection(selection)}`;
+  return updated.includes('【解读选择】')
+    ? updated
+    : updated.replace(/\n\n【任务】/u, `\n\n${selectionSection}\n\n【任务】`);
 }
 
 export type DivinationDraft = {
@@ -84,12 +102,13 @@ export type DivinationDraft = {
   birthPlace?: string;
   birthLongitude?: string;
   birthLatitude?: string;
-  liuyaoMethod?: 'time' | 'coins' | 'manual';
+  liuyaoMethod?: 'time' | 'coins' | 'manual' | 'yarrow';
   liuyaoYaos?: Array<6 | 7 | 8 | 9>;
   liuyaoCoinThrows?: Array<{ coins: [2 | 3, 2 | 3, 2 | 3]; total: 6 | 7 | 8 | 9 }>;
   meihuaMethod: 'time' | 'number' | 'random' | 'timeTrigram';
   meihuaNumber: string;
   xiaoliurenMethod: XiaoliurenDivinationMethod;
+  xiaoliurenRule?: 'common' | 'duoneng';
   jinkoujueMethod: JinkoujueDivinationMethod;
   jinkoujueBranch: string;
   jinkoujueNumber: string;
@@ -125,8 +144,14 @@ export type DivinationDraft = {
   astrolabeLongitude: string;
   astrolabeTimezone: string;
   astrolabeTopic?: AstrolabePromptTopic;
+  promptTopicId?: string;
+  promptSubtopicId?: string;
+  promptScope?: string;
   taiyiYear: string;
   taiyiScope?: TaiyiScope;
+  zhugeText: string;
+  kongmingMethod?: 'random' | 'manual';
+  kongmingPattern?: string;
 };
 
 export type DivinationSession = {
@@ -136,6 +161,7 @@ export type DivinationSession = {
   prompt: string;
   data: DivinationData;
   timeContext?: DivinationTimeContext;
+  selection?: PromptSelection;
 };
 
 export type DivinationTimeContext = {
@@ -159,6 +185,9 @@ export type BuildDivinationPromptOptions = {
   astrolabeScopeText?: string;
   schools?: readonly string[];
   timeContextText?: string;
+  topicId?: string;
+  subtopicId?: string;
+  scope?: string;
 };
 
 export function buildDivinationPrompt(
@@ -169,6 +198,19 @@ export function buildDivinationPrompt(
   options: BuildDivinationPromptOptions = {},
 ) {
   const isCustomQuestion = Boolean(options.isCustomQuestion);
+  const promptMethodId = method === 'huangji' ? 'huangji-jingshi' : method;
+  const hasPromptSelection =
+    options.topicId !== undefined ||
+    options.subtopicId !== undefined ||
+    options.scope !== undefined;
+  const selection = hasPromptSelection
+    ? requirePromptSelection({
+        methodId: promptMethodId,
+        topicId: options.topicId,
+        subtopicId: options.subtopicId,
+        scope: options.scope,
+      })
+    : undefined;
   const liuyaoTemplate = options.liuyaoTemplate ?? 'general';
   const liurenTemplate = options.liurenTemplate ?? 'general';
   const astrolabeTopic =
@@ -183,6 +225,9 @@ export function buildDivinationPrompt(
     liuyaoTemplate,
   });
   if (method === 'ssgw') {
+    if (selection) {
+      throw new Error('三山国王灵签提示词只接受本次签谱资料，不支持通用主题选择。');
+    }
     return infoText.replace(/^占法：三山国王灵签\n/u, '');
   }
   const supplementarySection = formatSupplementaryInfoSection(
@@ -199,14 +244,15 @@ export function buildDivinationPrompt(
     method === 'liuyao'
       ? buildSection('【问题范围】', buildLiuyaoTemplateText(liuyaoTemplate))
       : '';
-  const taskText =
+  const baseTaskText =
     method === 'astrolabe' && !isCustomQuestion
       ? buildPromptTask(buildAstrolabeTopicTask(astrolabeTopic), 'astrolabe')
       : method === 'tarot'
         ? buildTarotSpreadTask(data as TarotData)
         : method === 'lenormand' && (data as LenormandData).cards.length === 1
           ? buildPromptTask('依据唯一牌位与基础牌义回答【问题】。', 'lenormand-single')
-          : buildTaskText(method);
+          : buildTaskText(method, data);
+  const taskText = selection ? buildPromptSelectionTask(baseTaskText, selection) : baseTaskText;
   const promptSchoolMethod = method === 'huangji' ? 'huangji-jingshi' : method;
   const selectedSchools = options.schools?.length
     ? normalizePromptSchoolIds(promptSchoolMethod as PromptSchoolMethod, options.schools)
@@ -237,6 +283,7 @@ export function buildDivinationPrompt(
       buildSection('【分析对象】', buildLiurenAnalysisObjectText(data as LiurenData)),
       schoolSection,
       liurenTemplateSection,
+      selection ? buildSection('【解读选择】', getPromptSelectionSection(selection)) : '',
       buildSection('【任务】', taskText),
       buildSection('【问题】', normalizedQuestion),
     ]
@@ -252,6 +299,7 @@ export function buildDivinationPrompt(
     astrolabeScopeText ? buildSection('【分析对象】', astrolabeScopeText) : '',
     buildSection('【占卜信息】', infoText),
     schoolSection,
+    selection ? buildSection('【解读选择】', getPromptSelectionSection(selection)) : '',
     isCustomQuestion ? '' : liuyaoTemplateSection,
     isCustomQuestion ? '' : liurenTemplateSection,
     buildSection('【任务】', taskText),
@@ -360,6 +408,18 @@ function validateDraft(draft: DivinationDraft) {
     if (!/^\d+$/.test(draft.ssgwNumber?.trim() ?? '') || number < 1 || number > 92) {
       throw new Error('签号需为1至92的整数');
     }
+  }
+
+  if (draft.method === 'zhuge' && [...draft.zhugeText.trim()].length !== 3) {
+    throw new Error('请随念写下三个汉字');
+  }
+
+  if (
+    draft.method === 'kongming' &&
+    (draft.kongmingMethod ?? 'random') === 'manual' &&
+    !/^[●○]{5}$/.test(draft.kongmingPattern ?? '')
+  ) {
+    throw new Error('请完成五枚硬币的阴阳取象');
   }
 
   if (draft.method === 'jinkoujue' && draft.jinkoujueMethod === 'number') {
@@ -548,11 +608,13 @@ function resolveDivinationTimeContext(
   }
   const longitude = readNumberText(draft.birthLongitude ?? '', '起局地点经度');
   assertNumberRange(longitude, '起局地点经度', -180, 180);
+  // 页面输入按全年 UTC+8 标准时构造（customDate 统一以 +08:00 生成），
+  // 因此只传固定偏移 8，不附 Asia/Shanghai 历史时区做一致性校验；
+  // 混用两种口径会让 1986-1991 夏令时日期在回拨冲突检查中被误拒。
   const conversion = convertTrueSolarTime({
     localDateTime: clockDateTime,
     longitude,
     timezone: 8,
-    timeZoneId: 'Asia/Shanghai',
   });
   const effectiveDateTime = conversion.correctedDateTime;
   const date = new Date(`${effectiveDateTime}+08:00`);
@@ -755,6 +817,7 @@ export async function generateDivinationSession(
       const module = await import('mingyu-core/divination/xiaoliuren');
       data = module.generateXiaoliuren({
         method: draft.xiaoliurenMethod,
+        rule: draft.xiaoliurenRule ?? 'common',
         customDate: calculationDate,
       });
       break;
@@ -830,6 +893,18 @@ export async function generateDivinationSession(
           : module.drawRandomSign(customDate);
       break;
     }
+    case 'zhuge': {
+      const module = await import('mingyu-core/name-number');
+      data = module.calculateZhugeNumber(draft.zhugeText);
+      break;
+    }
+    case 'kongming': {
+      const module = await import('mingyu-core/name-number');
+      data = module.castKongmingHexagram(
+        (draft.kongmingMethod ?? 'random') === 'manual' ? draft.kongmingPattern : undefined,
+      );
+      break;
+    }
     case 'almanac': {
       const module = await import('mingyu-core/divination/almanac');
       data = module.generateAlmanacSelection({
@@ -879,20 +954,35 @@ export async function generateDivinationSession(
     method === 'almanac' && !inputQuestion
       ? buildAlmanacSessionTitle(data as AlmanacData)
       : inputQuestion;
+  const promptMethodId = method === 'huangji' ? 'huangji-jingshi' : method;
+  const selection =
+    draft.promptTopicId !== undefined ||
+    draft.promptSubtopicId !== undefined ||
+    draft.promptScope !== undefined
+      ? requirePromptSelection({
+          methodId: promptMethodId,
+          topicId: draft.promptTopicId,
+          subtopicId: draft.promptSubtopicId,
+          scope: draft.promptScope,
+        })
+      : undefined;
   const prompt =
     method === 'huangji'
       ? timing
         ? insertTimeContextIntoPrompt(
-            (data as HuangjiJingshiResult).prompt,
+            applyPromptSelectionToExistingPrompt((data as HuangjiJingshiResult).prompt, selection),
             timing.context.promptText,
           )
-        : (data as HuangjiJingshiResult).prompt
+        : applyPromptSelectionToExistingPrompt((data as HuangjiJingshiResult).prompt, selection)
       : buildDivinationPrompt(method, inputQuestion, data, supplementaryInfo, {
           isCustomQuestion: method === 'almanac' ? false : draft.questionSource === 'custom',
           liuyaoTemplate: draft.liuyaoTemplate,
           liurenTemplate: draft.liurenTemplate,
           astrolabeTopic: draft.astrolabeTopic,
           timeContextText: timing?.context.promptText,
+          topicId: draft.promptTopicId,
+          subtopicId: draft.promptSubtopicId,
+          scope: draft.promptScope,
         });
   return {
     method,
@@ -901,5 +991,6 @@ export async function generateDivinationSession(
     prompt,
     data,
     ...(timing ? { timeContext: timing.context } : {}),
+    ...(selection ? { selection } : {}),
   };
 }

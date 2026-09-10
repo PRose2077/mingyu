@@ -12,7 +12,10 @@ import {
 import {
   BAZI_COMPATIBILITY_PROMPT_PRESETS,
   BAZI_PROMPT_PRESETS,
+  buildPromptSelectionTask,
   formatBaziFortuneSelection,
+  getPromptSelectionSection,
+  requirePromptSelection,
 } from 'mingyu-core/prompt';
 import { formatPromptCurrentTime } from '../../lib/prompt-time';
 import {
@@ -60,12 +63,12 @@ function formatFullFortuneOutputSection(result: BaziChartResult | null): string 
 
   const lines = [
     '完整大运流年：',
-    ...result.luckInfo.cycles.flatMap((cycle, cycleIndex) => {
+    ...result.luckInfo.cycles.map((cycle) => {
       const cycleType = cycle.isXiaoyun ? '童运' : cycle.type;
-      return [
-        `${cycleIndex + 1}. ${cycle.ganZhi}${cycleType}：${cycle.year}年起，约${cycle.age}岁交运`,
-        ...cycle.years.map((year) => `  - ${year.year}年（${year.age}岁）${year.ganZhi}`),
-      ];
+      const yearsText = cycle.years
+        .map((year) => `${year.year}年（${year.age}岁）${year.ganZhi}`)
+        .join('、');
+      return `  ${cycle.ganZhi}${cycleType}（${cycle.year}年起，约${cycle.age}岁交运）：${yearsText}`;
     }),
   ];
 
@@ -82,7 +85,9 @@ function buildBaziFullAnalysisObjectSection(): string {
 
 function buildFortunePromptAddon(ctx: FortuneSelectionContext | null): string {
   if (!ctx) return '';
-  return '';
+  const fortuneSections = formatBaziFortuneSelection(ctx);
+  if (!fortuneSections) return '';
+  return `结合当前所选岁运（${fortuneSections.analysisObject}），深入分析该时间维度的干支五行气机、岁运天克地冲/天合地合、刑冲破害原局关键字及太岁引动之具体吉凶动静，给出明确的时机推演与应对策略。`;
 }
 
 function normalizeBaziScopeLabel(scopeLabel: string | undefined) {
@@ -120,10 +125,25 @@ export function buildPromptFromConfig(
   chartResult: BaziChartResult | null,
   fortuneSelectionContext: FortuneSelectionContext | null = null,
   questionScopeLabel?: string,
-  options: { isCustomQuestion?: boolean; fortuneScope?: BaziFortunePromptScope } = {},
+  options: {
+    isCustomQuestion?: boolean;
+    fortuneScope?: BaziFortunePromptScope;
+    topicId?: string;
+    subtopicId?: string;
+    scope?: string;
+  } = {},
 ): { system: string; user: string } {
   const isCustomQuestion = Boolean(options.isCustomQuestion);
   const fortuneScope = options.fortuneScope ?? fortuneSelectionContext?.scope ?? 'natal';
+  const selection =
+    options.topicId !== undefined || options.subtopicId !== undefined || options.scope !== undefined
+      ? requirePromptSelection({
+          methodId: 'bazi',
+          topicId: options.topicId,
+          subtopicId: options.subtopicId,
+          scope: options.scope,
+        })
+      : undefined;
   const hasFullFortuneOutput = fortuneScope === 'full';
   const promptConfig: SinglePromptConfig | null = chartResult?.pillars
     ? (BAZI_AI_PROMPTS.single.find((c) => c.id === selectedOption.id) ?? null)
@@ -146,9 +166,10 @@ export function buildPromptFromConfig(
       ? formatFullFortuneOutputSection(chartResult)
       : '';
     const fortuneAddon = buildFortunePromptAddon(fortuneSelectionContext);
-    const task = [buildBaziTaskText(scopeLabel, promptConfig.prompt), fortuneAddon]
+    const baseTask = [buildBaziTaskText(scopeLabel, promptConfig.prompt), fortuneAddon]
       .filter(Boolean)
       .join(' ');
+    const task = selection ? buildPromptSelectionTask(baseTask, selection) : baseTask;
 
     return {
       system: SYSTEM_PROMPT,
@@ -156,6 +177,7 @@ export function buildPromptFromConfig(
         buildPromptGuidanceSections('bazi'),
         buildPromptSection('当前时间', formatPromptCurrentTime()),
         buildPromptSection('排盘信息', chartData),
+        selection ? buildPromptSection('解读选择', getPromptSelectionSection(selection)) : '',
         hasFullFortuneOutput
           ? buildPromptSection('分析对象', buildBaziFullAnalysisObjectSection())
           : '',
@@ -167,9 +189,11 @@ export function buildPromptFromConfig(
         fullFortuneSection ? buildPromptSection('命限资料', fullFortuneSection) : '',
         buildPromptSection(
           '任务',
-          isCustomQuestion
-            ? buildCustomQuestionTask('八字排盘资料', 'bazi')
-            : buildPromptTask(task || '请依据八字排盘资料完成解读。', 'bazi'),
+          selection
+            ? task
+            : isCustomQuestion
+              ? buildCustomQuestionTask('八字排盘资料', 'bazi')
+              : buildPromptTask(task || '请依据八字排盘资料完成解读。', 'bazi'),
         ),
         normalizedQuestion ? buildPromptSection('问题', normalizedQuestion) : '',
       ]),
@@ -189,6 +213,7 @@ export function buildPromptFromConfig(
       buildPromptGuidanceSections('bazi'),
       buildPromptSection('当前时间', formatPromptCurrentTime()),
       buildPromptSection('排盘信息', chartData),
+      selection ? buildPromptSection('解读选择', getPromptSelectionSection(selection)) : '',
       hasFullFortuneOutput
         ? buildPromptSection('分析对象', buildBaziFullAnalysisObjectSection())
         : '',
@@ -198,9 +223,16 @@ export function buildPromptFromConfig(
       fullFortuneSection ? buildPromptSection('命限资料', fullFortuneSection) : '',
       buildPromptSection(
         '任务',
-        isCustomQuestion
-          ? buildCustomQuestionTask('八字排盘资料', 'bazi')
-          : buildPromptTask('请依据八字排盘资料完成解读。', 'bazi'),
+        selection
+          ? buildPromptSelectionTask(
+              isCustomQuestion
+                ? buildCustomQuestionTask('八字排盘资料', 'bazi')
+                : buildPromptTask('请依据八字排盘资料完成解读。', 'bazi'),
+              selection,
+            )
+          : isCustomQuestion
+            ? buildCustomQuestionTask('八字排盘资料', 'bazi')
+            : buildPromptTask('请依据八字排盘资料完成解读。', 'bazi'),
       ),
       normalizedQuestion ? buildPromptSection('问题', normalizedQuestion) : '',
     ]),

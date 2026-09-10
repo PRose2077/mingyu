@@ -48,6 +48,16 @@ import { hasTianPanStar, hasTianPanStem } from './helpers/palace-utils';
 
 export { createQimenPriorityPalaces } from './helpers/guidance';
 export type { QimenPriorityPalace } from './helpers/guidance';
+export {
+  calculateQimenLifetime,
+  generateQimenLifetimePrompt,
+  buildLifetimePrompt,
+  normalizeQimenLifetimeTime,
+  extractPersonalMarkers,
+  buildTopicCandidates,
+  buildLifetimeStages,
+  scanLifetimeDynamicEvents,
+} from './lifetime';
 export { analyzeQimenEvidence } from '../../qimen-evidence';
 export type {
   QimenCalculationEvidenceFact,
@@ -423,6 +433,7 @@ export function generateQimen(
     dayBranch,
     monthBranch,
     solarTerm: jushuResult.jieQi || jieQi,
+    actualSolarTerm: jushuResult.actualJieQi || jieQi,
     epoch: yuan,
     hourGanZhi: ganzhi.hour,
     hourStem,
@@ -668,3 +679,4 @@ export type { QimenScope, QimenMethod }; // re-export for consumer convenience
 // ============================================================================
 
 export { getHorseBranch, resolveQimenBranchPalace, resolveZhiShiLandingPalace };
+export { evaluateQimenPatternFulfillment } from './helpers/guidance';

@@ -6,6 +6,23 @@ import type { BirthProfile } from '../profile';
 import type { EvidenceFact, PalaceFact, ScopeType } from '../types/analysis';
 import type { ZiweiRuntime, ZiweiRuntimeOptions } from '../ziwei/runtime';
 import { buildPromptTask } from '../prompt/guidance';
+import {
+  evaluateBaziZiweiCorroboration,
+  evaluateShaYaoCorroboration,
+  evaluateGuiRenCorroboration,
+  type BaziZiweiCorroborationResult,
+  type ShaYaoCorroborationResult,
+  type GuiRenCorroborationResult,
+} from './corroboration';
+
+export {
+  evaluateBaziZiweiCorroboration,
+  evaluateShaYaoCorroboration,
+  evaluateGuiRenCorroboration,
+  type BaziZiweiCorroborationResult,
+  type ShaYaoCorroborationResult,
+  type GuiRenCorroborationResult,
+};
 
 export type BaziZiweiSynthesisThemeId =
   | 'overview'
@@ -28,6 +45,8 @@ export interface SynthesisEvidenceFact {
   title: string;
   detail: string;
   sourceKeys: string[];
+  /** detail 截断而未纳入的证据条数（未截断时为 0 或缺省） */
+  truncatedEvidenceCount?: number;
 }
 
 export interface BaziZiweiSynthesisTheme {
@@ -48,7 +67,9 @@ export interface BaziZiweiSynthesis {
     ziwei: number;
   };
   timingReference: BaziZiweiTimingReference;
+  corroboration?: BaziZiweiCorroborationResult;
   missingFacts: string[];
+
   methodology: string[];
 }
 
@@ -374,6 +395,8 @@ function createZiweiThemeFacts(
         const relevantEvidence = payload.evidence_pool.filter(
           (item) => item.scope === active.scope && item.type !== 'natal_palace',
         );
+        // 来源键与实际写入 detail 的证据保持同一范围，避免登记范围大于实际使用范围
+        const usedEvidence = relevantEvidence.slice(0, 12);
         return [
           {
             key: `ziwei:synthesis:${active.scope}:active`,
@@ -387,9 +410,10 @@ function createZiweiThemeFacts(
                 (item) =>
                   `${item.star}化${item.mutagen}${item.palace_name ? `入${item.palace_name}` : ''}`,
               ),
-              ...relevantEvidence.slice(0, 12).map((item) => item.promptText ?? item.description),
+              ...usedEvidence.map((item) => item.promptText ?? item.description),
             ]).join('；'),
-            sourceKeys: relevantEvidence.map((item) => item.key ?? item.stable_key),
+            sourceKeys: usedEvidence.map((item) => item.key ?? item.stable_key),
+            truncatedEvidenceCount: relevantEvidence.length - usedEvidence.length,
           },
         ];
       });
@@ -421,12 +445,30 @@ export function buildBaziZiweiSynthesis(params: {
     baziEvidence: definition.baziFactKeys.flatMap((key) => baziFacts[key] ?? []),
     ziweiEvidence: createZiweiThemeFacts(params.ziwei, definition),
   }));
-  const missingFacts = themes.flatMap((theme) => [
-    ...(theme.baziEvidence.length ? [] : [`${theme.label}缺少八字资料`]),
-    ...(theme.ziweiEvidence.length ? [] : [`${theme.label}缺少紫微资料`]),
-  ]);
+  // 逐主题核对声明所需资料项：缺资料与“未记录”占位均计入缺口
+  const missingFacts = themes.flatMap((theme, index) => {
+    const definition = THEMES[index]!;
+    const gaps: string[] = [];
+    if (!theme.baziEvidence.length) {
+      gaps.push(`${theme.label}缺少八字资料`);
+    } else {
+      const placeholderKeys = definition.baziFactKeys.filter((key) =>
+        (baziFacts[key] ?? []).every(
+          (fact) =>
+            !fact.detail || fact.detail.includes('未记录') || fact.detail.includes('未登记'),
+        ),
+      );
+      if (placeholderKeys.length) {
+        gaps.push(`${theme.label}八字资料仅有未记录占位：${placeholderKeys.join('、')}`);
+      }
+    }
+    if (!theme.ziweiEvidence.length) gaps.push(`${theme.label}缺少紫微资料`);
+    return gaps;
+  });
   if (!baziFacts.luck.length) missingFacts.push('运限基准日期缺少对应八字大运或童限');
   if (!baziFacts.annual.length) missingFacts.push('运限基准年份缺少对应八字流年');
+
+  const corroboration = evaluateBaziZiweiCorroboration(params.bazi, params.ziwei);
 
   return {
     key: 'bazi-ziwei:synthesis',
@@ -438,11 +480,13 @@ export function buildBaziZiweiSynthesis(params: {
       ziwei: new Set(themes.flatMap((theme) => theme.ziweiEvidence.map((item) => item.key))).size,
     },
     timingReference: timingReference.fact,
+    corroboration,
     missingFacts,
     methodology: [
       '八字与紫微各自保留原有排盘口径和事实链。',
       '按同一人生主题并列两套资料，供解读时比较相互印证、补充与口径差异。',
       '运势部分按大运、大限与流年层级对齐，不压缩为分数或概率。',
+      '资料完整仅表示各主题声明的资料项均已提供且非未记录占位，不代表古籍内容全部校勘完成。',
     ],
   };
 }
@@ -465,15 +509,15 @@ export function formatBaziZiweiSynthesisForPrompt(
         : '兼顾传统术语与白话解释，完整交代判断依据';
   const themeText = synthesis.themes
     .map((theme) => {
-      const bazi = theme.baziEvidence.map((item) => `- ${item.title}：${item.detail}`).join('\n');
-      const ziwei = theme.ziweiEvidence.map((item) => `- ${item.title}：${item.detail}`).join('\n');
+      const bazi = theme.baziEvidence.map((item) => `  ${item.title}：${item.detail}`).join('\n');
+      const ziwei = theme.ziweiEvidence.map((item) => `  ${item.title}：${item.detail}`).join('\n');
       return [
-        `### ${theme.label}`,
+        `【${theme.label}】`,
         `分析主线：${theme.focus}`,
         '八字资料：',
-        bazi || '- 本主题资料未提供',
+        bazi || '  本主题资料未提供',
         '紫微资料：',
-        ziwei || '- 本主题资料未提供',
+        ziwei || '  本主题资料未提供',
       ].join('\n');
     })
     .join('\n\n');
@@ -487,6 +531,10 @@ export function formatBaziZiweiSynthesisForPrompt(
     '',
     '【运限基准】',
     `${synthesis.timingReference.dateStr} ${synthesis.timingReference.shichen}（时辰索引${synthesis.timingReference.hourIndex}）`,
+    '',
+    '【合参导引】',
+    '两盘印证：八字重原局五行气数与岁运引动，紫微重星曜气象与四化落宫；同向结论为主干断点，口径差异为内外张力。',
+    synthesis.corroboration ? synthesis.corroboration.summary : '',
     '',
     '【合参资料】',
     themeText,

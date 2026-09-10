@@ -71,8 +71,8 @@ test('shensha: 可扩展 registry（不破坏既有系统）', () => {
     dayGanZhi: '甲申',
     hourGanZhi: '丁卯',
   });
-  assert.deepEqual(jiaXu[0].value, ['申', '酉']);
-  assert.deepEqual(jiaShen[0].value, ['午', '未']);
+  assert.deepEqual(jiaXu[0].value, ['申', '酉', '戌', '亥']);
+  assert.deepEqual(jiaShen[0].value, ['午', '未', '戌', '亥']);
   // 自定义神煞可自由注册（地基可继续拓展）
   core.shensha.registerShensha({
     id: 'demo',
@@ -274,19 +274,11 @@ test('tarot: 逐牌证据应保留正逆位、关键词、元素与牌阶', () =
 });
 
 test('tarot: 全部牌面事实只保留牌位、牌名、正逆位与牌面资料', () => {
-  const facts = tarotCards.flatMap((card, index) => {
-    const cardEvidence = getCardEvidence(card.name);
+  const facts = tarotCards.flatMap((card) => {
     return [false, true].flatMap((reversed) => {
-      const data = drawTarotSpread('single', { seed: `牌义证据-${index}-${reversed}` });
-      data.cards = [
-        {
-          id: card.number,
-          name: card.name,
-          position: '当前指引',
-          reversed,
-          ...cardEvidence,
-        },
-      ];
+      const data = drawTarotSpread('single', {
+        manualCards: [{ id: card.number, reversed }],
+      });
       return analyzeTarotEvidence(data).traditionalFacts;
     });
   });
@@ -368,7 +360,7 @@ test('taiyi: 年家七十二局立成（依古籍与 Kintaiyi 逐局表校订）
   assert.equal(r.sixteenGods.length, 16);
   assert.equal(r.model.id, 'taiyi-four-calculations-72-table');
   assert.ok(r.prompt.includes('太乙神数'));
-  assert.doesNotMatch(r.prompt, /十六神/);
+  assert.match(r.prompt, /十六神：/);
   assert.ok(r.prompt.includes('主客定算'));
   assert.ok(r.prompt.includes('将参'));
   assert.ok(r.prompt.includes('核心宫位'));
@@ -646,7 +638,7 @@ test('ganzhi: tyme4ts 权威后端（纳音/干支五行/合冲害/十神）', (
   assert.equal(core.ganzhi.getTenStar('甲', '乙'), '劫财');
 });
 
-test('shensha: 黄历神煞层（委托 tyme4ts 151 神煞）', () => {
+test('shensha: 黄历神煞目录与日期查询保留分类和建除信息', () => {
   const names = core.shensha.listHuangliShenshaNames();
   assert.ok(names.length >= 100, `黄历神煞应≥100，实为 ${names.length}`);
   const info = core.shensha.getHuangliShensha(2026, 7, 10);

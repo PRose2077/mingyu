@@ -1,7 +1,7 @@
 /**
  * @file 玄空飞星
- * @description 三元九运、下卦山向飞星、局型组合与结构化证据。
- * @传统依据 玄空飞星通行的三元九运、运盘顺飞、元龙阴阳定山向盘顺逆与下卦口径。
+ * @description 三元九运、下卦山向飞星、流年流月紫白叠宫、局型组合与结构化证据。
+ * @传统依据 玄空飞星通行的三元九运、运盘顺飞、元龙阴阳定山向盘顺逆与下卦口径；流年流月取三元紫白入中后顺飞。
  * 不做形峦、玄空大卦或吉凶总分。
  */
 
@@ -13,6 +13,72 @@ import {
   type CompassMountainPosition,
 } from '../direction';
 import { analyzeXuanKongEvidence, type XuanKongEvidenceAnalysis } from './evidence';
+import { evaluateCastleGate, type CastleGateEvaluation } from './castle-gate';
+import {
+  flyStars,
+  FLYING_STAR_WUXING,
+  resolveFlyingStarYunState,
+  resolveShanXiangRelation,
+  resolveMonthFlyingStar,
+  resolveXuanKongFlowStars,
+  resolveYearFlyingStar,
+  type FlyingStarYunState,
+  type ShanXiangRelation,
+  type XuanKongFlowStars,
+} from './period-stars';
+
+export {
+  evaluateCastleGate,
+  flyStars,
+  resolveFlyingStarYunState,
+  resolveMonthFlyingStar,
+  resolveShanXiangRelation,
+  resolveXuanKongFlowStars,
+  resolveYearFlyingStar,
+};
+export type {
+  FlyDirection,
+  FlyingStarYunState,
+  ShanXiangRelation,
+  XuanKongFlowStars,
+} from './period-stars';
+export type { CastleGateCandidate, CastleGateEvaluation } from './castle-gate';
+
+/**
+ * 蒋大鸿《地理辨正》、沈氏玄空学通行二十四山替卦（起星）诀。
+ * “子癸并甲申，贪狼一路行；壬卯乙未坤，五位为巨门；
+ *  乾亥辰巽巳，连枝武曲位；酉辛丑艮丙，天星说破军；
+ *  寅午庚丁上，右弼四星临。”
+ */
+export const SUBSTITUTE_STAR_POEM =
+  '子癸并甲申，贪狼一路行；壬卯乙未坤，五位为巨门；乾亥辰巽巳，连枝武曲位；酉辛丑艮丙，天星说破军；寅午庚丁上，右弼四星临。';
+
+/** 二十四山起星替卦对应表（替星数：1贪狼、2巨门、6武曲、7破军、9右弼，其余归本位星）。 */
+export const TWENTY_FOUR_MOUNTAIN_SUBSTITUTES: Readonly<Record<string, number>> = {
+  子: 1,
+  癸: 1,
+  甲: 1,
+  申: 1,
+  壬: 2,
+  卯: 2,
+  乙: 2,
+  未: 2,
+  坤: 2,
+  辰: 6,
+  巽: 6,
+  巳: 6,
+  乾: 6,
+  亥: 6,
+  艮: 7,
+  丙: 7,
+  辛: 7,
+  酉: 7,
+  丑: 7,
+  寅: 9,
+  午: 9,
+  丁: 9,
+  庚: 9,
+};
 
 export type XuanKongFormation = Formation;
 
@@ -42,6 +108,12 @@ export interface XuanKongInput {
   facingDegree?: number;
   sitDegree?: number;
   measurementUncertaintyDegrees?: number;
+  /** 流年公元年；不传则只排宅盘，不排流年飞星 */
+  flowYear?: number;
+  /** 流月公历月 1-12；须同时提供 flowYear */
+  flowMonth?: number;
+  /** 流月日期；不传时按该月 15 日所属节气月 */
+  flowDay?: number;
 }
 
 export interface XuanKongPalace {
@@ -51,6 +123,10 @@ export interface XuanKongPalace {
   yunStar: number;
   shanStar: number;
   xiangStar: number;
+  yearStar?: number;
+  monthStar?: number;
+  shanXiangRelation: ShanXiangRelation;
+  yunStarState: FlyingStarYunState;
 }
 
 export interface XuanKongCombination {
@@ -68,7 +144,10 @@ export interface XuanKongResult {
     yun: number[];
     shan: number[];
     xiang: number[];
+    year?: number[];
+    month?: number[];
   };
+  flowStars?: XuanKongFlowStars;
   palaces: XuanKongPalace[];
   formation: XuanKongFormation;
   combinations: XuanKongCombination[];
@@ -83,6 +162,7 @@ export interface XuanKongResult {
     summary: string;
   };
   measurement?: XuanKongMeasurement;
+  castleGate?: CastleGateEvaluation;
   evidenceAnalysis: XuanKongEvidenceAnalysis;
   prompt: string;
 }
@@ -140,8 +220,6 @@ const MOUNTAIN_TO_GONG: Record<string, number> = {
 
 const PERIOD_BASE_YEAR = 1864;
 
-export type FlyDirection = '顺飞' | '逆飞';
-
 const PALACE_KEY_TO_GONG: Record<string, number> = {
   kan: 1,
   kun: 2,
@@ -187,27 +265,6 @@ export function resolveXuanKongPeriod(year: number): XuanKongPeriod {
   };
 }
 
-/**
- * 九星入中后按显式方向飞布。
- * 返回长度 9 的数组，下标 0..8 对应宫 1..9。
- */
-export function flyStars(centerStar: number, direction: FlyDirection): number[] {
-  if (!Number.isInteger(centerStar) || centerStar < 1 || centerStar > 9) {
-    throw new Error(`飞星入中值必须是 1-9，当前为 ${centerStar}。`);
-  }
-  if (direction !== '顺飞' && direction !== '逆飞') {
-    throw new Error(`飞星方向必须是顺飞或逆飞，当前为 ${String(direction)}。`);
-  }
-  const order = [5, 6, 7, 8, 9, 1, 2, 3, 4];
-  const stars = Array.from({ length: 9 }, () => 0);
-  for (let i = 0; i < 9; i += 1) {
-    const gong = order[i];
-    const offset = direction === '顺飞' ? i : -i;
-    stars[gong - 1] = ((centerStar - 1 + offset + 18) % 9) + 1;
-  }
-  return stars;
-}
-
 function oppositeMountain(mountain: string): string {
   const index = TWENTY_FOUR_MOUNTAINS.indexOf(mountain);
   return TWENTY_FOUR_MOUNTAINS[(index + 12) % 24];
@@ -232,6 +289,22 @@ function resolveMountains(input: XuanKongInput): {
       input.facingDegree !== undefined
         ? getMountainFromDegree(input.facingDegree)
         : getMountainFromDegree(((input.sitDegree as number) + 180) % 360);
+    if (Math.abs(Math.abs(sitPos.degree - facingPos.degree) - 180) > 1e-10) {
+      throw new Error('坐向度数必须严格相差180度。');
+    }
+    for (const [mountain, position, label] of [
+      [input.sitMountain, sitPos, '坐山'],
+      [input.facingMountain, facingPos, '朝向'],
+    ] as const) {
+      if (mountain !== undefined) {
+        assertMountain(mountain, label);
+        if (mountain !== position.mountain) {
+          throw new Error(
+            `${label}${mountain}与度数${position.degree}对应的${position.mountain}不一致。`,
+          );
+        }
+      }
+    }
     if (oppositeMountain(sitPos.mountain) !== facingPos.mountain) {
       throw new Error(
         `坐向必须严格相对；当前坐${sitPos.mountain}应向${oppositeMountain(sitPos.mountain)}，不能向${facingPos.mountain}。`,
@@ -269,6 +342,18 @@ function resolveMountains(input: XuanKongInput): {
         });
       }
     }
+    // 中央九度半宽（4.5度）之外的兼线提示：当前仅提供下卦计算，起替条件（兼度阈值）
+    // 尚未核定启用，替卦不作自动判断，由使用者结合流派自行核定
+    const distanceFromCenter = (pos: CompassMountainPosition) => {
+      if (pos.isBoundary) return 7.5;
+      const rem = (((pos.degree + 7.5) % 15) + 15) % 15;
+      return Math.abs(7.5 - rem);
+    };
+    if (distanceFromCenter(sitPos) > 4.5 || distanceFromCenter(facingPos) > 4.5) {
+      warnings.push(
+        '坐山或朝向偏离山中心超过中央九度半宽（4.5度），已进入兼向范围；当前仅提供下卦计算，替卦未启用，起替条件请结合所采用流派核定',
+      );
+    }
     return {
       sitMountain: sitPos.mountain,
       facingMountain: facingPos.mountain,
@@ -304,7 +389,14 @@ function resolveMountains(input: XuanKongInput): {
   throw new Error('需提供 sitMountain/facingMountain，或 sitDegree/facingDegree。');
 }
 
-function buildPalaces(yun: number[], shan: number[], xiang: number[]): XuanKongPalace[] {
+function buildPalaces(
+  yun: number[],
+  shan: number[],
+  xiang: number[],
+  yunNumber: number,
+  yearPlate?: number[],
+  monthPlate?: number[],
+): XuanKongPalace[] {
   return GONG_ORDER.map((gong, index) => ({
     gong,
     name: GONG_NAMES[gong],
@@ -312,25 +404,79 @@ function buildPalaces(yun: number[], shan: number[], xiang: number[]): XuanKongP
     yunStar: yun[index],
     shanStar: shan[index],
     xiangStar: xiang[index],
+    ...(yearPlate ? { yearStar: yearPlate[index] } : {}),
+    ...(monthPlate ? { monthStar: monthPlate[index] } : {}),
+    shanXiangRelation: resolveShanXiangRelation(shan[index], xiang[index]),
+    yunStarState: resolveFlyingStarYunState(yun[index], yunNumber),
   }));
 }
 
+function formatStarRelation(from: string, fromStar: number, to: string, toStar: number): string {
+  const source = `${from}${fromStar}${FLYING_STAR_WUXING[fromStar]}`;
+  const target = `${to}${toStar}${FLYING_STAR_WUXING[toStar]}`;
+  switch (resolveShanXiangRelation(fromStar, toStar)) {
+    case '生入':
+      return `${target}生${source}`;
+    case '生出':
+      return `${source}生${target}`;
+    case '克入':
+      return `${target}克${source}`;
+    case '克出':
+      return `${source}克${target}`;
+    case '比和':
+      return `${source}与${target}比和`;
+  }
+}
+
 function buildPrompt(result: Omit<XuanKongResult, 'evidenceAnalysis' | 'prompt'>) {
+  const natalStar = (label: string, star: number) =>
+    `${label}${star}（${FLYING_STAR_WUXING[star]}，${resolveFlyingStarYunState(star, result.period.yun)}）`;
   const palaceLines = result.palaces
-    .map(
-      (item) =>
-        `${item.name}（${item.direction}）：运${item.yunStar} 山${item.shanStar} 向${item.xiangStar}`,
-    )
+    .map((item) => {
+      const combos = result.combinations
+        .filter((combo) => combo.palaces?.includes(item.gong))
+        .map((combo) => combo.name);
+      const yearText =
+        item.yearStar !== undefined
+          ? ` 年${item.yearStar}（${FLYING_STAR_WUXING[item.yearStar]}）`
+          : '';
+      const monthText =
+        item.monthStar !== undefined
+          ? ` 月${item.monthStar}（${FLYING_STAR_WUXING[item.monthStar]}）`
+          : '';
+      const relations = [
+        `山向${item.shanXiangRelation}：${formatStarRelation('山星', item.shanStar, '向星', item.xiangStar)}`,
+        formatStarRelation('运星', item.yunStar, '山星', item.shanStar),
+        formatStarRelation('运星', item.yunStar, '向星', item.xiangStar),
+      ];
+      return `${item.name}（${item.direction}）：${natalStar('运', item.yunStar)} ${natalStar('山', item.shanStar)} ${natalStar('向', item.xiangStar)}${yearText}${monthText}\n  ${relations.join('；')}${combos.length ? `；组合${combos.join('、')}` : ''}`;
+    })
     .join('\n');
   return [
     '【玄空飞星排盘】',
     `运程：${result.period.label}`,
+    `本次资料层级：宅盘（运盘、山盘、向盘）${result.flowStars ? '、流年盘' : ''}${result.flowStars?.monthPlate ? '、流月盘' : ''}。各星当运、生气、退气等状态以宅盘${result.period.yun}运为参照。`,
     `山向：坐${result.sitMountain}向${result.facingMountain}`,
     `局型：${result.formation}`,
     result.combinations.length
       ? `组合：${result.combinations.map((item) => item.name).join('、')}`
       : '组合：未检出特殊组合',
     `到山到向：${result.daoShanXiang.summary}`,
+    result.castleGate?.summary ?? '',
+    (() => {
+      const wuHuang = result.palaces.filter((p) => p.xiangStar === 5 || p.shanStar === 5);
+      return wuHuang.length
+        ? `五黄落宫：${wuHuang
+            .map((palace) => {
+              const layers = [
+                palace.shanStar === 5 ? '山星' : '',
+                palace.xiangStar === 5 ? '向星' : '',
+              ].filter(Boolean);
+              return `${palace.name}（${palace.direction}，${layers.join('、')}）`;
+            })
+            .join('；')}`
+        : '';
+    })(),
     ...(result.measurement?.stability === '山向边界敏感' &&
     result.measurement.candidateMountains?.length
       ? [
@@ -339,6 +485,13 @@ function buildPrompt(result: Omit<XuanKongResult, 'evidenceAnalysis' | 'prompt'>
             .join('、')}`,
         ]
       : []),
+    result.flowStars
+      ? `流年飞星：${result.flowStars.yearPlate.year === 0 ? '公元前1' : result.flowStars.yearPlate.year}年${result.flowStars.yearPlate.starName}入中；${result.flowStars.yearPlate.calendarNote}`
+      : '',
+    result.flowStars?.monthPlate
+      ? `流月飞星：${result.flowStars.monthPlate.starName}入中；${result.flowStars.monthPlate.calendarNote}`
+      : '',
+    result.flowStars ? '宅盘与流年流月逐宫叠加：' : '',
     '三盘九宫：',
     palaceLines,
   ]
@@ -405,14 +558,38 @@ export function generateXuanKong(input: XuanKongInput): XuanKongResult {
             : '当运星未同时形成到山到向',
   };
 
-  const palaces = buildPalaces(yunPlate, shanPlate, xiangPlate);
+  const flowStars = resolveXuanKongFlowStars({
+    flowYear: input.flowYear,
+    flowMonth: input.flowMonth,
+    flowDay: input.flowDay,
+  });
+  const palaces = buildPalaces(
+    yunPlate,
+    shanPlate,
+    xiangPlate,
+    period.yun,
+    flowStars?.yearPlate.plate,
+    flowStars?.monthPlate?.plate,
+  );
   const formation = chart.formation;
   const combinations = chart.combinations.map(mapCombination);
+  const castleGate = evaluateCastleGate({
+    yun: period.yun,
+    facingMountain,
+    yunPlate,
+  });
   const partial = {
     period,
     sitMountain,
     facingMountain,
-    plates: { yun: yunPlate, shan: shanPlate, xiang: xiangPlate },
+    plates: {
+      yun: yunPlate,
+      shan: shanPlate,
+      xiang: xiangPlate,
+      ...(flowStars ? { year: flowStars.yearPlate.plate } : {}),
+      ...(flowStars?.monthPlate ? { month: flowStars.monthPlate.plate } : {}),
+    },
+    ...(flowStars ? { flowStars } : {}),
     palaces,
     formation,
     combinations,
@@ -422,6 +599,7 @@ export function generateXuanKong(input: XuanKongInput): XuanKongResult {
       mode: '下卦' as const,
     },
     daoShanXiang,
+    castleGate,
     ...(measurement ? { measurement } : {}),
   };
 

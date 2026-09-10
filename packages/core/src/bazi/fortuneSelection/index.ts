@@ -107,6 +107,7 @@ function buildGanZhiTriggerSummary(
   const parts = splitGanZhi(ganZhi);
   if (!parts || !result.pillars) return `${scopeLabel}触发：原局资料不足，暂无法判断合冲刑害。`;
 
+  const majorEvents: string[] = [];
   const triggers: string[] = [];
 
   PILLAR_KEYS.forEach((key) => {
@@ -114,25 +115,39 @@ function buildGanZhiTriggerSummary(
     if (!pillar) return;
     const pillarLabel = PILLAR_LABELS[key];
 
-    if (parts.gan === pillar.gan) {
-      triggers.push(`天干${parts.gan}与${pillarLabel}${pillar.gan}伏吟`);
-    }
-    if (BASIC_MAPPINGS.TIAN_GAN_WU_HE[parts.gan] === pillar.gan) {
-      triggers.push(`天干${parts.gan}合${pillarLabel}${pillar.gan}`);
-    }
-    if (BASIC_MAPPINGS.TIAN_GAN_CHONG[parts.gan] === pillar.gan) {
-      triggers.push(`天干${parts.gan}冲${pillarLabel}${pillar.gan}`);
+    const isStemClash = BASIC_MAPPINGS.TIAN_GAN_CHONG[parts.gan] === pillar.gan;
+    const isBranchClash = BASIC_MAPPINGS.DI_ZHI_CHONG[parts.zhi] === pillar.zhi;
+
+    if (isStemClash && isBranchClash) {
+      majorEvents.push(`与${pillarLabel}天克地冲`);
+    } else {
+      if (parts.gan === pillar.gan) {
+        triggers.push(`天干${parts.gan}与${pillarLabel}${pillar.gan}伏吟`);
+      }
+      if (BASIC_MAPPINGS.TIAN_GAN_WU_HE[parts.gan] === pillar.gan) {
+        triggers.push(`天干${parts.gan}合${pillarLabel}${pillar.gan}`);
+      }
+      if (isStemClash) {
+        triggers.push(`天干${parts.gan}冲${pillarLabel}${pillar.gan}`);
+      }
+
+      if (parts.zhi === pillar.zhi) {
+        triggers.push(`地支${parts.zhi}与${pillarLabel}${pillar.zhi}伏吟`);
+      }
+      if (BASIC_MAPPINGS.DI_ZHI_LIU_HE[parts.zhi] === pillar.zhi) {
+        triggers.push(`地支${parts.zhi}合${pillarLabel}${pillar.zhi}`);
+      }
+      if (isBranchClash) {
+        if (key === 'month') {
+          majorEvents.push(`冲提纲（月柱${pillar.zhi}受冲，主事业环境与家宅动荡）`);
+        } else if (key === 'day') {
+          majorEvents.push(`冲夫妻宫（日支${pillar.zhi}受冲，主感情关系与生活节奏受冲击）`);
+        } else {
+          triggers.push(`地支${parts.zhi}冲${pillarLabel}${pillar.zhi}`);
+        }
+      }
     }
 
-    if (parts.zhi === pillar.zhi) {
-      triggers.push(`地支${parts.zhi}与${pillarLabel}${pillar.zhi}伏吟`);
-    }
-    if (BASIC_MAPPINGS.DI_ZHI_LIU_HE[parts.zhi] === pillar.zhi) {
-      triggers.push(`地支${parts.zhi}合${pillarLabel}${pillar.zhi}`);
-    }
-    if (BASIC_MAPPINGS.DI_ZHI_CHONG[parts.zhi] === pillar.zhi) {
-      triggers.push(`地支${parts.zhi}冲${pillarLabel}${pillar.zhi}`);
-    }
     if (BASIC_MAPPINGS.DI_ZHI_XING[parts.zhi]?.includes(pillar.zhi)) {
       triggers.push(`地支${parts.zhi}刑${pillarLabel}${pillar.zhi}`);
     }
@@ -144,7 +159,60 @@ function buildGanZhiTriggerSummary(
     }
   });
 
-  return `${scopeLabel}触发：${triggers.length ? triggers.join('；') : '未见明显合冲刑害破。'}`;
+  // 三垣（命宫、胎元）引动检测
+  const sanYuanList: Array<{ label: string; gz?: string; effect: string }> = [
+    { label: '命宫', gz: result.mingGong, effect: '立足根基动荡，主变迁变动' },
+    { label: '胎元', gz: result.taiYuan, effect: '元气受动，防长辈与身心耗损' },
+  ];
+  sanYuanList.forEach(({ label, gz, effect }) => {
+    if (!gz) return;
+    const syParts = splitGanZhi(gz);
+    if (!syParts) return;
+
+    const isStemClash = BASIC_MAPPINGS.TIAN_GAN_CHONG[parts.gan] === syParts.gan;
+    const isBranchClash = BASIC_MAPPINGS.DI_ZHI_CHONG[parts.zhi] === syParts.zhi;
+
+    if (isStemClash && isBranchClash) {
+      majorEvents.push(`天克地冲${label}（${effect}）`);
+    } else if (isBranchClash) {
+      majorEvents.push(`地支冲${label}（${label}${syParts.zhi}受冲，${effect}）`);
+    } else if (BASIC_MAPPINGS.DI_ZHI_LIU_HE[parts.zhi] === syParts.zhi) {
+      triggers.push(`地支合${label}`);
+    }
+  });
+
+  // 全局三刑齐备检测
+  const natalZhis = PILLAR_KEYS.map((k) => result.pillars[k]?.zhi).filter(Boolean) as string[];
+  const combinedZhis = new Set([parts.zhi, ...natalZhis]);
+  if (combinedZhis.has('寅') && combinedZhis.has('巳') && combinedZhis.has('申')) {
+    if (parts.zhi === '寅' || parts.zhi === '巳' || parts.zhi === '申') {
+      majorEvents.push('引动【寅巳申】无恩之刑三刑齐备');
+    }
+  }
+  if (combinedZhis.has('丑') && combinedZhis.has('戌') && combinedZhis.has('未')) {
+    if (parts.zhi === '丑' || parts.zhi === '戌' || parts.zhi === '未') {
+      majorEvents.push('引动【丑戌未】恃势之刑三刑齐备');
+    }
+  }
+
+  // 全局三合局齐备检测
+  const sanheList: Array<{ name: string; branches: string[] }> = [
+    { name: '申子辰三合水局', branches: ['申', '子', '辰'] },
+    { name: '亥卯未三合木局', branches: ['亥', '卯', '未'] },
+    { name: '寅午戌三合火局', branches: ['寅', '午', '戌'] },
+    { name: '巳酉丑三合金局', branches: ['巳', '酉', '丑'] },
+  ];
+  for (const group of sanheList) {
+    if (group.branches.includes(parts.zhi) && group.branches.every((b) => combinedZhis.has(b))) {
+      const natalCount = group.branches.filter((b) => natalZhis.includes(b)).length;
+      if (natalCount >= 2) {
+        majorEvents.push(`与原局会合成【${group.name}】`);
+      }
+    }
+  }
+
+  const allItems = [...majorEvents, ...triggers];
+  return `${scopeLabel}触发：${allItems.length ? allItems.join('；') : '未见明显合冲刑害破。'}`;
 }
 
 function buildFortuneEvidenceLines(params: {
@@ -644,15 +712,23 @@ export function buildFortuneSelectionContext(
 
   const actualDate = dayInfo.solarDate;
   const [actualYear, actualMonth, actualDay] = actualDate.split('-').map(Number);
-  const hourBreakdown = getDayHourBreakdown(
+  // 流时列表按子初命理日生成（含前日 23:00 起的晚子时），因此第二重求交使用
+  // 节令月有效范围而非公历零点切片的流日范围：交节日前后不属于所选流月的时辰被裁剪，
+  // 平日午夜的晚子时仍正常保留
+  const monthTimeRangeForHours = clipToCycle(monthInfo.timeRange, cycleTimeRange);
+  const rawHourBreakdown = getDayHourBreakdown(
     actualYear,
     actualMonth,
     actualDay,
     options.hourMode ?? 'twelve',
-  ).flatMap((item) => {
+  );
+  const hourBreakdown = rawHourBreakdown.flatMap((item) => {
     const interval = clipToCycle(item.interval, cycleTimeRange);
-    return interval ? [{ ...item, interval }] : [];
+    if (!interval || !monthTimeRangeForHours) return [];
+    const clippedToMonth = clipToCycle(interval, monthTimeRangeForHours);
+    return clippedToMonth ? [{ ...item, interval: clippedToMonth }] : [];
   });
+  const hoursClippedByBoundary = hourBreakdown.length < rawHourBreakdown.length;
   const previousDate = new Date(actualYear, actualMonth - 1, actualDay - 1);
   const ziChuStart = `${previousDate.getFullYear()}-${String(previousDate.getMonth() + 1).padStart(2, '0')}-${String(previousDate.getDate()).padStart(2, '0')} 23:00`;
   const ziChuEnd = `${actualDate} 22:59`;
@@ -704,8 +780,11 @@ export function buildFortuneSelectionContext(
         `流日：${actualDate} ${dayInfo.ganZhi}`,
         `流日十神：${dayTenGod}`,
         dayTriggerSummary,
-        `按子初换日：${ziChuStart} 至 ${ziChuEnd}`,
+        `按子初换日（命理日口径，与节令月有效范围分列）：${ziChuStart} 至 ${ziChuEnd}`,
         ...(dayInfo.boundaryNote ? [`交节提示：${dayInfo.boundaryNote}`] : []),
+        ...(hoursClippedByBoundary
+          ? ['流时列表已按节令月有效范围与交节时刻裁剪，交节前后各时辰仅保留落在所选节令月范围内者']
+          : []),
       ],
       evidenceLines: buildFortuneEvidenceLines({
         scope: 'day',

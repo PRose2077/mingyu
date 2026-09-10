@@ -1,4 +1,6 @@
+import { formatLiurenLesson, formatLiurenTransmission } from './liuren-facts';
 import type { DivinationMethodId } from '../divination/config';
+import { formatJinkoujueRelations, formatJinkoujueMovementRules } from './jinkoujue-facts';
 import type {
   AlmanacData,
   AstrolabeData,
@@ -18,6 +20,7 @@ import { formatAstrolabeForPrompt } from './astrolabe';
 import { formatDivinationInfo } from './divination';
 import type { HuangjiJingshiResult } from '../huangji-jingshi';
 import { formatHuangjiCivilYear } from '../huangji-jingshi/standard';
+import { formatAlmanacGods } from '../divination/almanac-evidence';
 
 type SupportedMethod = Exclude<DivinationMethodId, 'random'>;
 
@@ -113,7 +116,9 @@ function formatJinkoujueDetail(data: JinkoujueData) {
       ? `阴阳取用：${data.yinYangUse.pattern}（用${data.yinYangUse.usePosition}${data.yinYangUse.isVoid ? '，落空' : ''}）`
       : '',
     `五动三动：${data.movements.map((item) => `${item.category}${item.name}（${item.trigger}）`).join('；') || '未记录'}`,
-    `四位关系：贵将${data.relations.guiToJiang}；贵人${data.relations.guiToRen}；将地${data.relations.jiangToDi}；人地${data.relations.renToDi}；贵地${data.relations.guiToDi}`,
+    data.bihePoem ? `四位比合：${data.bihePoem}` : '',
+    formatJinkoujueRelations(data),
+    formatJinkoujueMovementRules(),
   ].filter(Boolean);
 }
 
@@ -140,8 +145,8 @@ function formatLiurenDetail(data: LiurenData) {
   return [
     `地盘：${data.earthlyPlate?.join('、') || '未列'}`,
     `天盘：${data.heavenlyPlate.map((item) => `${item.under}上${item.branch}乘${item.god}`).join('；')}`,
-    `四课：${data.fourLessons.map((item) => `${item.name}${item.upper}临${item.lower}乘${item.god}，${item.relation}`).join('；')}`,
-    `三传：${data.threeTransmissions.map((item) => `${item.stage}${item.branch}乘${item.god}，${item.relation}${item.isVoid ? '（空）' : ''}`).join('；')}`,
+    `四课：${data.fourLessons.map(formatLiurenLesson).join('；')}`,
+    `三传：${data.threeTransmissions.map((_, index) => formatLiurenTransmission(data, index)).join('；')}`,
     data.guaTi?.length ? `课体：${data.guaTi.join('、')}` : '',
   ];
 }
@@ -173,7 +178,16 @@ function formatSsgwDetail(data: SsgwData) {
 function formatAlmanacDetail(data: AlmanacData) {
   return [
     `参与人：${data.participants.map((item) => `${item.name}（${item.gender || '性别未填'}，${item.solarDate}，${item.zodiac}，日主${item.dayMaster}${item.dayMasterElement}）`).join('；') || '未列'}`,
-    `候选日：${data.days.map((item) => `${item.date}：${item.ganzhi.day}，${item.dayOfficer}执，宜${item.recommends.slice(0, 8).join('、') || '无'}，忌${item.avoids.slice(0, 8).join('、') || '无'}，${item.clash}`).join('\n')}`,
+    `候选日：${data.days
+      .map(
+        (item) =>
+          `${item.date}：${item.ganzhi.day}，${item.dayOfficer}执，宜${item.recommends.slice(0, 8).join('、') || '无'}，忌${item.avoids.slice(0, 8).join('、') || '无'}，${item.clash}${formatAlmanacGods(
+            item,
+          )
+            .map((text) => `；${text}`)
+            .join('')}`,
+      )
+      .join('\n')}`,
   ];
 }
 

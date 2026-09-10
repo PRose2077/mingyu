@@ -14,6 +14,9 @@
  */
 
 import { hexagramsData } from '../../divination/hexagram-data';
+export { generateYarrow } from './yarrow';
+import { generateYarrow } from './yarrow';
+export type { YarrowChange, YarrowLine, YarrowOptions, YarrowResult } from './yarrow';
 import { getSixAnimals, getVoidBranches } from '../../calendar/lunar';
 import {
   wuxing,
@@ -27,7 +30,7 @@ import { getDivinationTime } from '../../calendar/timeManager';
 import { assertOptionalRecord } from '../../shared/validation';
 import type { RandomOptions, RandomTrace } from '../../shared/random';
 import { createRandomContext, hasRandomOptions, randomInt } from '../../shared/random';
-import { attachResultMeta } from '../../shared/result';
+import { attachResultMeta, MingyuCoreError } from '../../shared/result';
 import { analyzeLiuyaoEvidence } from '../liuyao-evidence';
 import type { LiuyaoChangeRelation, LiuyaoData } from '../../types/divination';
 import {
@@ -40,7 +43,6 @@ import {
   getSeasonState,
   isLiuchong,
   BRANCH_ORDER,
-  BRANCH_WUXING,
   CHANGSHENG_ORDER,
   SANHE_GROUPS,
 } from '../../ganzhi';
@@ -49,17 +51,8 @@ import {
  * 五行入墓支（《卜筮正宗》卷三《墓库章》、《增删卜易·入墓》定例）：
  * 金墓在丑、木墓在未、火墓在戌、水土墓在辰。
  * 《增删卜易》所列三墓为入日墓、入动墓、动而化墓；月建仅用于旺衰，
- * 不因月支恰为某五行墓库就直接判为“入月墓”。当前结构先准确提供日墓，
- * 动墓与化墓待结合动变关系另行结构化，避免把未实现的口径混入结果。
+ * 不因月支恰为某五行墓库就直接判为“入月墓”。
  */
-const WUXING_RUMU: Record<string, string> = {
-  金: '丑',
-  木: '未',
-  火: '戌',
-  水: '辰',
-  土: '辰',
-};
-
 /**
  * 五行十二宫（《三命通会》卷三论五行旺相、《卜筮正宗》卷四十二宫）：
  * 长生（气之始）、沐浴（败地）、冠带（渐成）、临官（禄地）、帝旺（极盛）、
@@ -96,12 +89,6 @@ function getShiErGong(wuxing: string, branch: string): string {
     throw new Error(`六爻十二长生无法定位 ${wuxing} 在 ${branch} 支的状态。`);
   }
   return stage;
-}
-
-/** 判断爻之地支是否入日墓 */
-function isRiMu(branch: string, dayBranch: string): boolean {
-  const wuxing = BRANCH_WUXING[branch];
-  return WUXING_RUMU[wuxing] === dayBranch;
 }
 
 /**
@@ -621,6 +608,47 @@ function getNaJiaAndLiuQin(mainHexagramName: string, palace: { name: string; wux
   return yaosWithInfo;
 }
 
+/**
+ * 飞伏生克与出伏难易判定（依据《增删卜易·伏神章》与《卜筮正宗》）
+ */
+export function evaluateLiuyaoHiddenSpiritInteraction(params: {
+  hiddenWuxing: string;
+  hiddenVoid: boolean;
+  flyingWuxing: string;
+  flyingDizhi: string;
+  flyingVoid: boolean;
+  monthBranch?: string;
+}): string {
+  const { hiddenWuxing, flyingWuxing, flyingDizhi, flyingVoid, monthBranch } = params;
+
+  // 1. 检查飞神是否空破（《增删卜易·伏神章》：飞神逢空逢破，无力压伏，伏神易得出）
+  const isFlyingMonthBroken = monthBranch ? isLiuchong(flyingDizhi, monthBranch) : false;
+  if (flyingVoid || isFlyingMonthBroken) {
+    const reason =
+      flyingVoid && isFlyingMonthBroken ? '飞神旬空且月破' : flyingVoid ? '飞神旬空' : '飞神月破';
+    return `${reason}，压制瓦解，伏神易脱颖而出`;
+  }
+
+  // 2. 飞伏生克五行判定
+  if (isSheng(flyingWuxing, hiddenWuxing)) {
+    return '飞来生伏得长生，得飞神生扶，伏神最易得出，多得暗中助力';
+  }
+  if (isKe(hiddenWuxing, flyingWuxing)) {
+    return '伏克飞神为出暴，伏神有力可破制而出，虽费周折终能成事';
+  }
+  if (isKe(flyingWuxing, hiddenWuxing)) {
+    return '飞来克伏受制，伏神被死压难出，求谋阻滞不易成';
+  }
+  if (isSheng(hiddenWuxing, flyingWuxing)) {
+    return '伏生飞神泄气，生助飞神而自身耗损，多劳少功';
+  }
+  if (hiddenWuxing === flyingWuxing) {
+    return '飞伏比和同气，得平辈同侪暗助';
+  }
+
+  return '飞伏平';
+}
+
 function buildHiddenSpirits(params: {
   originalName: string;
   palace: { name: string; wuxing: string };
@@ -631,8 +659,9 @@ function buildHiddenSpirits(params: {
     wuxing: string;
   }>;
   voidBranches: string[];
+  monthBranch?: string;
 }) {
-  const { originalName, palace, yaosDetail, voidBranches } = params;
+  const { originalName, palace, yaosDetail, voidBranches, monthBranch } = params;
   const homeHexagramName = palaceHexagrams[palace.name as keyof typeof palaceHexagrams]?.[0];
 
   if (!homeHexagramName || homeHexagramName === originalName) {
@@ -643,19 +672,32 @@ function buildHiddenSpirits(params: {
   const homeYaos = getNaJiaAndLiuQin(homeHexagramName, palace);
 
   return homeYaos
-    .map((homeYao, index) => ({
-      sixRelative: homeYao.liuqin,
-      position: index + 1,
-      najiaDizhi: homeYao.dizhi,
-      wuxing: homeYao.wuxing,
-      isVoid: voidBranches.includes(homeYao.dizhi),
-      underYao: {
+    .map((homeYao, index) => {
+      const underYao = {
         position: yaosDetail[index].position,
         sixRelative: yaosDetail[index].sixRelative,
         najiaDizhi: yaosDetail[index].najiaDizhi,
         wuxing: yaosDetail[index].wuxing,
-      },
-    }))
+      };
+      const isHiddenVoid = voidBranches.includes(homeYao.dizhi);
+      const isFlyingVoid = voidBranches.includes(underYao.najiaDizhi);
+      return {
+        sixRelative: homeYao.liuqin,
+        position: index + 1,
+        najiaDizhi: homeYao.dizhi,
+        wuxing: homeYao.wuxing,
+        isVoid: isHiddenVoid,
+        underYao,
+        interactionEffect: evaluateLiuyaoHiddenSpiritInteraction({
+          hiddenWuxing: homeYao.wuxing,
+          hiddenVoid: isHiddenVoid,
+          flyingWuxing: underYao.wuxing,
+          flyingDizhi: underYao.najiaDizhi,
+          flyingVoid: isFlyingVoid,
+          monthBranch,
+        }),
+      };
+    })
     .filter((item) => !appearedRelatives.has(item.sixRelative));
 }
 
@@ -794,11 +836,13 @@ function getSpecialPattern(
  * // result 包含 mainHexagram、changedHexagram、yaos（六爻详情）等字段
  * ```
  */
-export type LiuyaoGenerationMethod = 'time' | 'manual' | 'coins';
+export type LiuyaoGenerationMethod = 'time' | 'manual' | 'coins' | 'yarrow';
 
 export interface LiuyaoGenerationOptions extends RandomOptions {
   /** 起卦方式；默认有 yaos 时为 manual，否则为 time。 */
   method?: LiuyaoGenerationMethod;
+  /** 蓍草十八变的手工左堆策数。 */
+  yarrowSplits?: readonly number[];
   /** 可选手工三钱法爻值，按初爻到上爻传入 6、7、8、9。 */
   yaos?: readonly number[];
   /** 用户逐爻手摇得到的三钱记录，按初爻到上爻传入。 */
@@ -844,10 +888,34 @@ function resolveRawYaos(
 ): { yaos: number[]; generation: LiuyaoGeneration; randomTrace?: RandomTrace } {
   assertOptionalRecord(options, '六爻起卦设置');
   const method = options?.method ?? (options?.yaos !== undefined ? 'manual' : 'time');
-  if (!['time', 'manual', 'coins'].includes(method)) {
+  if (!['time', 'manual', 'coins', 'yarrow'].includes(method)) {
     throw new Error(`未知的六爻起卦方式: ${method}`);
   }
   const usesRandomOptions = hasRandomOptions(options);
+  if (method === 'yarrow') {
+    if (options?.yaos !== undefined || options?.coinThrows !== undefined) {
+      throw new MingyuCoreError({
+        code: 'YARROW_INPUT_CONFLICT',
+        category: 'validation',
+        message: '蓍草起卦不能同时提供手工爻值或铜钱记录。',
+      });
+    }
+    const { randomTrace, ...yarrow } = generateYarrow({
+      ...options,
+      ...(options?.yarrowSplits !== undefined ? { splits: options.yarrowSplits } : {}),
+    });
+    return {
+      yaos: yarrow.yaos,
+      generation: { method, yarrow },
+      ...(randomTrace ? { randomTrace } : {}),
+    };
+  }
+  if (options?.yarrowSplits !== undefined)
+    throw new MingyuCoreError({
+      code: 'YARROW_INPUT_CONFLICT',
+      category: 'validation',
+      message: '蓍草分堆记录只适用于蓍草起卦。',
+    });
   if (method === 'time') {
     if (options?.yaos !== undefined) throw new Error('六爻时间起卦不能同时提供手工爻值。');
     if (options?.coinThrows !== undefined) throw new Error('六爻时间起卦不能同时提供手摇记录。');
@@ -977,6 +1045,11 @@ export function generateLiuyao(customDate?: Date, options?: LiuyaoGenerationOpti
     changedHexagram.name,
     changingYaosResult.length > 0,
   );
+  const movingBranches = yaosInfo.flatMap((info, index) =>
+    rawYaos[index] === 6 || rawYaos[index] === 9
+      ? [{ position: index + 1, branch: info.dizhi }]
+      : [],
+  );
   const yaosDetail = yaosInfo.map((info, index) => {
     const isChanging = rawYaos[index] === 6 || rawYaos[index] === 9;
     const changedInfo = isChanging ? changedYaosInfo[index] : null;
@@ -1012,6 +1085,16 @@ export function generateLiuyao(customDate?: Date, options?: LiuyaoGenerationOpti
           voids.includes(changedInfo.dizhi),
         )
       : [];
+    const dayLifeStage = getShiErGong(info.wuxing, dayBranch);
+    const movingLifeStages = movingBranches.map(({ position, branch }) => ({
+      position,
+      branch,
+      stage: getShiErGong(info.wuxing, branch),
+    }));
+    const changedLifeStage = changedInfo ? getShiErGong(info.wuxing, changedInfo.dizhi) : undefined;
+    const isDongMu = movingLifeStages.some(({ stage }) => stage === '墓');
+    const isHuaMu = changedLifeStage === '墓';
+    const isRiMuFlag = dayLifeStage === '墓';
 
     return {
       position: index + 1,
@@ -1044,11 +1127,16 @@ export function generateLiuyao(customDate?: Date, options?: LiuyaoGenerationOpti
           ? monthBranch
           : undefined,
       isLiuhai: isLiuhai(info.dizhi, dayBranch) || isLiuhai(info.dizhi, monthBranch),
-      isRuMu: isRiMu(info.dizhi, dayBranch),
+      isRuMu: isRiMuFlag || isDongMu || isHuaMu,
+      dayLifeStage,
+      movingLifeStages,
+      changedLifeStage,
+      isDongMu,
+      isHuaMu,
       shiErGong: getShiErGong(info.wuxing, info.dizhi),
       // 兼容旧字段：古籍三墓不含“月墓”，因此固定为 false。
       isYueMu: false,
-      isRiMu: isRiMu(info.dizhi, dayBranch),
+      isRiMu: isRiMuFlag,
       changedYao: changedInfo
         ? {
             dizhi: changedInfo.dizhi,
@@ -1064,6 +1152,7 @@ export function generateLiuyao(customDate?: Date, options?: LiuyaoGenerationOpti
     palace,
     yaosDetail,
     voidBranches: voids,
+    monthBranch,
   });
 
   // 三合局只取明动、暗动及其变爻；静态纳甲支不能自行凑局。

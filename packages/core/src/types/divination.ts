@@ -6,6 +6,7 @@ import type { SolarIlluminationEvidence } from '../calendar/solar-illumination-e
 import type { HistoricalTimezoneEvidence } from '../calendar/historical-timezone';
 import type { TrueSolarTimeEvidenceFields } from '../calendar/true-solar-time';
 import type { HuangjiJingshiResult } from '../huangji-jingshi';
+import type { KongmingHexagramResult, ZhugeNumberResult } from '../name-number';
 
 export type { RandomOptions, RandomSource } from '../shared/random';
 export type { CoreResultMeta } from '../shared/result';
@@ -22,6 +23,8 @@ export type DivinationType =
   | 'tarot'
   | 'tarot_single'
   | 'ssgw'
+  | 'zhuge'
+  | 'kongming'
   | 'almanac'
   | 'lenormand'
   | 'astrolabe'
@@ -31,6 +34,7 @@ export type DivinationType =
 export type MeihuaDivinationMethod = 'time' | 'number' | 'random' | 'timeTrigram';
 
 export type XiaoliurenDivinationMethod = 'time';
+export type XiaoliurenRule = 'common' | 'duoneng';
 
 export interface MeihuaSettings extends RandomOptions {
   method?: MeihuaDivinationMethod;
@@ -44,6 +48,8 @@ export interface XiaoliurenPalaceDetail {
 }
 
 export interface XiaoliurenData {
+  rule?: XiaoliurenRule;
+  ruleLabel?: string;
   meta?: CoreResultMeta;
   method: XiaoliurenDivinationMethod;
   methodLabel: string;
@@ -145,6 +151,8 @@ export interface JinkoujueData {
   };
   movements: JinkoujueMovement[];
   mainLine: string;
+  /** 四位比合歌诀定性（二木为爻、二火为灾、二土为滞、二金为刑、二水为盗） */
+  bihePoem?: string;
   calculation: {
     method: JinkoujueDivinationMethod;
     methodLabel: string;
@@ -220,6 +228,20 @@ export interface LiuyaoYaoDetail extends BaseYaoDetail {
   liuhePartner?: string;
   isLiuhai?: boolean;
   isRuMu?: boolean;
+  /** 本爻五行对日辰所处的十二长生阶段。 */
+  dayLifeStage?: string;
+  /** 本爻五行对卦中明动爻地支所处的十二长生阶段。 */
+  movingLifeStages?: Array<{
+    position: number;
+    branch: string;
+    stage: string;
+  }>;
+  /** 本爻五行对自身变爻地支所处的十二长生阶段。 */
+  changedLifeStage?: string;
+  /** 本爻是否入卦中明动墓库。 */
+  isDongMu?: boolean;
+  /** 本爻发动后是否变入自身五行墓库。 */
+  isHuaMu?: boolean;
   shiErGong?: string;
   /** @deprecated 古籍三墓不含“月墓”；为兼容旧结构保留，始终为 false。 */
   isYueMu?: boolean;
@@ -238,6 +260,8 @@ export interface LiuyaoHiddenSpirit {
     najiaDizhi: string;
     wuxing: string;
   };
+  /** 飞伏生克实效断语（依据《增删卜易·伏神章》与《卜筮正宗》） */
+  interactionEffect?: string;
 }
 
 export type LiuyaoHexagramRelation = '六合卦' | '六冲卦';
@@ -295,7 +319,8 @@ export interface LiuyaoData extends BaseHexagramData {
   evidenceAnalysis?: import('../divination/liuyao-evidence').LiuyaoEvidenceAnalysis;
   /** 起卦来源与三钱投掷轨迹。 */
   generation?: {
-    method: 'time' | 'manual' | 'coins';
+    method: 'time' | 'manual' | 'coins' | 'yarrow';
+    yarrow?: Omit<import('../divination/algorithms/yarrow').YarrowResult, 'randomTrace'>;
     coinThrows?: Array<{
       coins: [2 | 3, 2 | 3, 2 | 3];
       total: 6 | 7 | 8 | 9;
@@ -446,6 +471,13 @@ export interface MeihuaData extends BaseHexagramData {
     changedRelation: string;
     changedTiYongRelation: string;
     tiYongRaw?: string;
+    /** 体用旺衰与生克综合断诀（《梅花易数·体用生克篇》） */
+    tiYongSeasonEvaluation?: string;
+    /** 事态初中终三阶段推进演化趋势（依据《梅花易数·观梅数诀》） */
+    timelineTrend?: {
+      trend: '先难后易' | '先顺后阻' | '始末顺畅' | '始终受制' | '中途多阻' | '平稳演进';
+      summary: string;
+    };
     yingQi?: string[];
   };
   /** 主卦信息 */
@@ -678,6 +710,215 @@ export interface QimenData {
   timestamp: number;
 }
 
+/** 奇门终身局人生主题枚举 */
+export type QimenTopic =
+  | 'career'
+  | 'wealth'
+  | 'marriage'
+  | 'health'
+  | 'academic'
+  | 'relocation'
+  | 'family'
+  | 'children'
+  | 'partnership';
+
+/** 奇门终身局阶段引擎策略配置 */
+export interface QimenStagePolicy {
+  /** 阶段划分模型：pillarFourLimits(四柱分限法，默认) | palaceWalk(九宫巡行法) | fuShiHexagramOrbit(符使卦轨法) */
+  model: 'pillarFourLimits' | 'palaceWalk' | 'fuShiHexagramOrbit';
+  /** 阶段起算依据：birthInstant(出生瞬间) | solarTermBoundary(节气边界) | lunarNewYear(立春/农历新年) */
+  anchorRule?: 'birthInstant' | 'solarTermBoundary' | 'lunarNewYear';
+  /** 年龄计算体系：fullYears(周岁，默认) | nominalAge(虚岁) */
+  ageSystem?: 'fullYears' | 'nominalAge';
+  /** 每阶段跨度年数（九宫行限时通常为 10 或 15） */
+  yearsPerStage?: number;
+}
+
+/** 奇门终身局输入契约 */
+export interface QimenLifetimeInput {
+  /** 出生时刻（ISO 8601 格式，如 "1990-05-15T14:30:00"） */
+  birthDateTime: string;
+  /** IANA 时区标识符（如 "Asia/Shanghai"） */
+  timeZoneId?: string;
+  /** 固定 UTC 偏移（默认 8） */
+  timezone?: number;
+  /** 出生地点与经纬度（真太阳时必须） */
+  location?: {
+    longitude: number;
+    latitude?: number;
+    locationName?: string;
+  };
+  /** 历法类型：solar(公历，默认) | lunar(农历) */
+  calendarType?: 'solar' | 'lunar';
+  /** 农历是否闰月 */
+  isLeapMonth?: boolean;
+  /** 时间标准：civil(民用时间，默认) | trueSolar(真太阳时) */
+  timeStandard?: 'civil' | 'trueSolar';
+  /** 是否应用中国 1986-1991 历史夏令时（仅固定偏移模式有效，默认关闭） */
+  applyChinaDst?: boolean;
+  /** 排盘方法：zhuanpan(转盘法，默认) | feipan(飞盘法) */
+  method?: 'zhuanpan' | 'feipan';
+  /** 定局方法：chaibu(拆补法，默认) | zhirun(置闰法) */
+  juMethod?: 'chaibu' | 'zhirun';
+  /** 阶段划分引擎配置 */
+  stagePolicy?: QimenStagePolicy;
+  /** 动态扫描的时间范围，未传入则仅返回基础局与阶段结构 */
+  periodRange?: {
+    startDate: string;
+    endDate: string;
+  };
+  /** 重点关注的人生主题列表 */
+  topics?: QimenTopic[];
+  /** 姓名或代号（仅用于解读展示） */
+  name?: string;
+  /** 性别（用于流派合参及部分运限顺逆判断） */
+  gender?: 'male' | 'female';
+  /** 门派或解读侧重：gongwei(宫位主客), geju(格局克应), zhuke(主客动静) */
+  schools?: readonly string[];
+  /** 输出明细级别：compact(默认精简) | full(完整证据链) */
+  detailMode?: 'compact' | 'full';
+}
+
+/** 奇门终身局个人标记落宫事实 */
+export interface QimenPersonalMarker {
+  /** 标记类型 */
+  markerType:
+    | 'yearStem'
+    | 'yearBranch'
+    | 'dayStem'
+    | 'hourStem'
+    | 'zhiFuStar'
+    | 'zhiShiDoor'
+    | 'companionStem';
+  /** 干支、门星名称（如 "甲", "子", "天蓬", "开门"） */
+  value: string;
+  /** 所属九宫编号（1-9） */
+  palace: number;
+  /** 宫位名称（如 "坎一宫"） */
+  palaceName: string;
+  /** 盘面层位 */
+  layer: 'tianPan' | 'diPan' | 'renPan' | 'shenPan' | 'baseGong';
+  /** 命理角色与传统意象说明 */
+  traditionalSignificance: string;
+}
+
+/** 奇门终身局主题宫候选 */
+export interface QimenTopicCandidate {
+  topic: QimenTopic;
+  topicName: string;
+  /** 主要候选宫编号 */
+  primaryPalaces: number[];
+  /** 辅助参考宫编号 */
+  secondaryPalaces: number[];
+  /** 依据来源：六亲生克、八门专司或神煞 */
+  basis: string;
+  /** 盘面主要吉凶格局呈现 */
+  patternSummary: string[];
+}
+
+/** 奇门终身局阶段卡 */
+export interface QimenLifetimeStage {
+  /** 阶段索引序号（0开始） */
+  stageIndex: number;
+  /** 阶段名称（如 "初限·早年根基"） */
+  title: string;
+  /** 起始展示年龄 */
+  ageStart: number;
+  /** 结束展示年龄 */
+  ageEnd: number;
+  /** 实际起止公历日期时间 */
+  calendarStart: string;
+  calendarEnd: string;
+  /** 主导宫位列表 */
+  dominantPalaces: Array<{ palace: number; name: string }>;
+  /** 关联的基础局个人标记 */
+  associatedMarkers: string[];
+  /** 阶段核心主线判断 */
+  stageTheme: string;
+  /** 阶段支持事实 */
+  supportFacts: string[];
+  /** 阶段制约与反证事实 */
+  constraintFacts: string[];
+  /** 包含的动态事件簇主键引用 */
+  eventClusterKeys?: string[];
+  /** 解释边界与限制 */
+  limitations: string[];
+}
+
+/** 奇门终身局动态事件簇 */
+export interface QimenEventCluster {
+  /** 事件簇唯一标识 */
+  key: string;
+  /** 归属阶段索引 */
+  stageIndex: number;
+  /** 时间跨度描述（如 "2027年"） */
+  timeSpan: string;
+  /** 涉及的人生主题 */
+  topics: QimenTopic[];
+  /** 触发盘事实（如流年干支、定局、太岁落宫） */
+  triggerFact: string;
+  /** 本命盘与动态盘叠合分析 */
+  interactionAnalysis: string;
+  /** 支持性盘面证据 */
+  supportEvidence: string[];
+  /** 反证与制约证据 */
+  counterEvidence: string[];
+  /** 相对节奏评估 */
+  rhythm: '快' | '中' | '慢' | '待机';
+  /** 留待现实核验与行动复盘的具体问题 */
+  verificationQuestions: string[];
+}
+
+/** 奇门终身局分层证据汇编 */
+export interface QimenLifetimeEvidence {
+  baseEvidenceAnalysis?: import('../divination/qimen-evidence').QimenEvidenceAnalysis;
+  personalMarkerFacts: Array<{
+    markerType: string;
+    value: string;
+    palace: number;
+    meaning: string;
+  }>;
+  stageFacts: Array<{
+    stageIndex: number;
+    title: string;
+    ageRange: string;
+    dominantPalaceNames: string[];
+    summary: string;
+  }>;
+  dynamicClusterFacts?: Array<{
+    key: string;
+    timeSpan: string;
+    triggerFact: string;
+    rhythm: string;
+  }>;
+  limitations: string[];
+}
+
+/** 奇门终身局完整输出结构 */
+export interface QimenLifetimeData {
+  schemaVersion: '1.0.0';
+  input: QimenLifetimeInput;
+  basis: {
+    calendar: string;
+    solarTerm: string;
+    timeStandard: string;
+    timeZoneUsed: string;
+    trueSolarOffsetSeconds?: number;
+    isDstApplied?: boolean;
+    crossesDate?: boolean;
+    method: 'zhuanpan' | 'feipan';
+    juMethod: 'chaibu' | 'zhirun';
+    stagePolicy: QimenStagePolicy;
+  };
+  baseChart: QimenData;
+  personalMarkers: QimenPersonalMarker[];
+  topicCandidates: QimenTopicCandidate[];
+  stages: QimenLifetimeStage[];
+  eventClusters?: QimenEventCluster[];
+  evidenceAnalysis?: QimenLifetimeEvidence;
+  prompt?: string;
+}
+
 export interface LiurenPlateItem {
   branch: string;
   under: string;
@@ -716,7 +957,16 @@ export interface LiurenGuaTiFact {
   id: string;
   stableKey: string;
   name: string;
-  category: '三传支类' | '三合成局' | '发用临地' | '岁将贵人' | '四课关系' | '贵人临地';
+  category:
+    | '三传支类'
+    | '三合成局'
+    | '发用临地'
+    | '岁将贵人'
+    | '四课关系'
+    | '贵人临地'
+    | '三传冲合'
+    | '传干生克'
+    | '旬尾发用';
   branches: string[];
   matchedConditions: string[];
   sourceTitle: string;
@@ -1094,6 +1344,8 @@ export interface AstrolabeBirthInput {
   timeZoneId?: string;
   locationName?: string;
   useTrueSolarTime?: boolean;
+  /** 坐标精度来源：user-provided 为用户精确坐标，其余见出生地点解析登记 */
+  coordinateAccuracy?: string;
 }
 
 export interface AstrolabePoint {
@@ -1106,6 +1358,10 @@ export interface AstrolabePoint {
   house: number;
   formatted: string;
   retrograde?: boolean;
+  /** 行星本征尊贵力量（入庙、曜升、落陷、坠落） */
+  dignity?: 'domicile' | 'exaltation' | 'detriment' | 'fall';
+  /** 行星本征尊贵力量中文标签（入庙、曜升、落陷、坠落） */
+  dignityLabel?: string;
 }
 
 export interface AstrolabeAspect {
@@ -1129,6 +1385,8 @@ export interface AstrolabeAspect {
 }
 
 export interface AstrolabeData {
+  houseSystem?: 'placidus' | 'whole_sign';
+  ephemerisWarnings?: string[];
   /** 星体、四轴、相位、反证、计算链与解释限制。 */
   evidenceAnalysis?: import('../divination/astrolabe-evidence').AstrolabeEvidenceAnalysis;
   birth: {
@@ -1147,6 +1405,8 @@ export interface AstrolabeData {
     trueSolarDateTime?: string;
     trueSolarEvidence?: TrueSolarTimeEvidenceFields;
     isTrueSolarTime?: boolean;
+    /** 坐标精度来源，未提供时为 undefined */
+    coordinateAccuracy?: string;
   };
   planets: AstrolabePoint[];
   angles: AstrolabePoint[];
@@ -1286,6 +1546,17 @@ export interface AstrolabeSynastryData {
   calculationChain: string[];
   aspects: AstrolabeSynastryAspect[];
   houseOverlays: AstrolabeHouseOverlay[];
+  receptions?: Array<{
+    type: '互溶' | '接纳';
+    person1Planet: string;
+    person2Planet: string;
+    person1PlanetLabel: string;
+    person2PlanetLabel: string;
+    sign1: string;
+    sign2: string;
+    summary: string;
+  }>;
+  receptionSummary?: string;
   summary: {
     totalAspects: number;
     harmonious: number;
@@ -1347,6 +1618,14 @@ export interface TaiyiResult {
   lordCount: number;
   guestCount: number;
   setCount: number;
+  /** 主客定算策数定性（和数、纯阴、纯阳、杂阴阳等） */
+  countNatures?: {
+    lord?: string;
+    guest?: string;
+    set?: string;
+  };
+  /** 大局攻守与策数博弈定性 */
+  tacticGuidance?: string;
   lordGeneral: number;
   lordAssistant: number;
   guestGeneral: number;
@@ -1386,6 +1665,8 @@ export type DivinationData =
   | LiurenData
   | TarotData
   | SsgwData
+  | ZhugeNumberResult
+  | KongmingHexagramResult
   | AlmanacData
   | LenormandData
   | AstrolabeData

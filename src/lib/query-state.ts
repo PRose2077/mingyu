@@ -3,8 +3,9 @@ import { BIRTH_TIME_OPTIONS } from '@/lib/birth-time';
 import { getBirthDateValidationMessage } from '@/lib/date-validation';
 
 export type ResultTabKey =
-  'bazi' | 'ziwei' | 'astrolabe' | 'qizheng' | 'bazhai' | 'prompt' | 'minglu';
-export type PromptSourceKey = 'bazi' | 'ziwei' | 'bazi-ziwei' | 'astrolabe' | 'qizheng' | 'bazhai';
+  'bazi' | 'ziwei' | 'qimen-lifetime' | 'astrolabe' | 'qizheng' | 'bazhai' | 'prompt' | 'minglu';
+export type PromptSourceKey =
+  'bazi' | 'ziwei' | 'bazi-ziwei' | 'qimen-lifetime' | 'astrolabe' | 'qizheng' | 'bazhai';
 export type BaziFortuneScope = 'natal' | 'full' | 'dayun' | 'year' | 'month' | 'day';
 export type { AstrolabePromptTopic };
 export type ZiweiScopeMode =
@@ -50,6 +51,8 @@ export type QueryPromptState = {
   tab: ResultTabKey;
   promptSource: PromptSourceKey;
   baziPresetId: string;
+  baziTopicId: string;
+  baziSubtopicId: string;
   baziShortcutMode: string;
   baziQuickQuestion: string;
   baziFortuneScope: BaziFortuneScope;
@@ -58,11 +61,15 @@ export type QueryPromptState = {
   baziFortuneMonth: string;
   baziFortuneDay: string;
   ziweiTopic: string;
+  ziweiTopicId: string;
+  ziweiSubtopicId: string;
   ziweiShortcutMode: string;
   ziweiQuickQuestion: string;
   ziweiScope: ZiweiScopeMode;
   ziweiScopeDate: string;
   astrolabeTopic: AstrolabePromptTopic;
+  astrolabeTopicId: string;
+  astrolabeSubtopicId: string;
   astrolabeShortcutMode: string;
   astrolabeQuickQuestion: string;
   astrolabeScope: AstrolabeScopeMode;
@@ -164,6 +171,8 @@ export const defaultPromptState: QueryPromptState = {
   tab: 'prompt',
   promptSource: 'bazi',
   baziPresetId: 'ai-mingge-zonglun',
+  baziTopicId: '',
+  baziSubtopicId: '',
   baziShortcutMode: '自定义',
   baziQuickQuestion: '',
   baziFortuneScope: 'natal',
@@ -172,11 +181,15 @@ export const defaultPromptState: QueryPromptState = {
   baziFortuneMonth: '',
   baziFortuneDay: '',
   ziweiTopic: 'chat',
+  ziweiTopicId: '',
+  ziweiSubtopicId: '',
   ziweiShortcutMode: '自定义',
   ziweiQuickQuestion: '',
   ziweiScope: 'origin',
   ziweiScopeDate: '',
   astrolabeTopic: 'life',
+  astrolabeTopicId: '',
+  astrolabeSubtopicId: '',
   astrolabeShortcutMode: '综合',
   astrolabeQuickQuestion: '',
   astrolabeScope: 'natal',
@@ -244,6 +257,8 @@ const PROMPT_PARAM_KEYS: Record<keyof QueryPromptState, string> = {
   tab: 't',
   promptSource: 'ps',
   baziPresetId: 'bid',
+  baziTopicId: 'btid',
+  baziSubtopicId: 'bts',
   baziShortcutMode: 'bsm',
   baziQuickQuestion: 'bq',
   baziFortuneScope: 'bfs',
@@ -252,11 +267,15 @@ const PROMPT_PARAM_KEYS: Record<keyof QueryPromptState, string> = {
   baziFortuneMonth: 'bfm',
   baziFortuneDay: 'bfd',
   ziweiTopic: 'zt',
+  ziweiTopicId: 'ztid',
+  ziweiSubtopicId: 'zts',
   ziweiShortcutMode: 'zsm',
   ziweiQuickQuestion: 'zq',
   ziweiScope: 'zs',
   ziweiScopeDate: 'zsd',
   astrolabeTopic: 'at',
+  astrolabeTopicId: 'atid',
+  astrolabeSubtopicId: 'ats',
   astrolabeShortcutMode: 'asm',
   astrolabeQuickQuestion: 'aq',
   astrolabeScope: 'as',
@@ -375,6 +394,13 @@ function appendPromptStateParams(params: URLSearchParams, prompt: QueryPromptSta
   setCompactParam(params, 'tab', prompt.tab, defaultPromptState.tab);
   setCompactParam(params, 'promptSource', prompt.promptSource, defaultPromptState.promptSource);
   setCompactParam(params, 'baziPresetId', prompt.baziPresetId, defaultPromptState.baziPresetId);
+  setCompactParam(params, 'baziTopicId', prompt.baziTopicId, defaultPromptState.baziTopicId);
+  setCompactParam(
+    params,
+    'baziSubtopicId',
+    prompt.baziSubtopicId,
+    defaultPromptState.baziSubtopicId,
+  );
   setCompactParam(
     params,
     'baziShortcutMode',
@@ -412,6 +438,13 @@ function appendPromptStateParams(params: URLSearchParams, prompt: QueryPromptSta
     defaultPromptState.baziFortuneDay,
   );
   setCompactParam(params, 'ziweiTopic', prompt.ziweiTopic, defaultPromptState.ziweiTopic);
+  setCompactParam(params, 'ziweiTopicId', prompt.ziweiTopicId, defaultPromptState.ziweiTopicId);
+  setCompactParam(
+    params,
+    'ziweiSubtopicId',
+    prompt.ziweiSubtopicId,
+    defaultPromptState.ziweiSubtopicId,
+  );
   setCompactParam(
     params,
     'ziweiShortcutMode',
@@ -430,6 +463,18 @@ function appendPromptStateParams(params: URLSearchParams, prompt: QueryPromptSta
     'astrolabeTopic',
     prompt.astrolabeTopic,
     defaultPromptState.astrolabeTopic,
+  );
+  setCompactParam(
+    params,
+    'astrolabeTopicId',
+    prompt.astrolabeTopicId,
+    defaultPromptState.astrolabeTopicId,
+  );
+  setCompactParam(
+    params,
+    'astrolabeSubtopicId',
+    prompt.astrolabeSubtopicId,
+    defaultPromptState.astrolabeSubtopicId,
   );
   setCompactParam(
     params,
@@ -809,6 +854,8 @@ export function parsePromptState(params: URLSearchParams): QueryPromptState {
   const tab: ResultTabKey =
     rawTab === 'bazi' ||
     rawTab === 'ziwei' ||
+    rawTab === 'qimen-lifetime' ||
+    rawTab === 'qimen' ||
     rawTab === 'astrolabe' ||
     rawTab === 'qizheng' ||
     rawTab === 'bazhai' ||
@@ -817,25 +864,33 @@ export function parsePromptState(params: URLSearchParams): QueryPromptState {
     rawTab === 'minglu'
       ? rawTab === 'residential'
         ? 'bazhai'
-        : rawTab
+        : rawTab === 'qimen'
+          ? 'qimen-lifetime'
+          : rawTab
       : defaultPromptState.tab;
   const rawPromptSource = getString(params, 'promptSource', defaultPromptState.promptSource);
   const promptSource: PromptSourceKey =
     rawPromptSource === 'ziwei' ||
     rawPromptSource === 'bazi-ziwei' ||
+    rawPromptSource === 'qimen-lifetime' ||
+    rawPromptSource === 'qimen' ||
     rawPromptSource === 'astrolabe' ||
     rawPromptSource === 'qizheng' ||
     rawPromptSource === 'bazhai' ||
     rawPromptSource === 'residential'
       ? rawPromptSource === 'residential'
         ? 'bazhai'
-        : rawPromptSource
+        : rawPromptSource === 'qimen'
+          ? 'qimen-lifetime'
+          : rawPromptSource
       : 'bazi';
 
   return normalizePromptState({
     tab,
     promptSource,
     baziPresetId: getString(params, 'baziPresetId', defaultPromptState.baziPresetId),
+    baziTopicId: getString(params, 'baziTopicId', defaultPromptState.baziTopicId),
+    baziSubtopicId: getString(params, 'baziSubtopicId', defaultPromptState.baziSubtopicId),
     baziShortcutMode: getString(params, 'baziShortcutMode', defaultPromptState.baziShortcutMode),
     baziQuickQuestion: getString(params, 'baziQuickQuestion', defaultPromptState.baziQuickQuestion),
     baziFortuneScope: parseBaziFortuneScope(
@@ -850,6 +905,8 @@ export function parsePromptState(params: URLSearchParams): QueryPromptState {
     baziFortuneMonth: getString(params, 'baziFortuneMonth', defaultPromptState.baziFortuneMonth),
     baziFortuneDay: getString(params, 'baziFortuneDay', defaultPromptState.baziFortuneDay),
     ziweiTopic: parseZiweiTopic(getString(params, 'ziweiTopic', defaultPromptState.ziweiTopic)),
+    ziweiTopicId: getString(params, 'ziweiTopicId', defaultPromptState.ziweiTopicId),
+    ziweiSubtopicId: getString(params, 'ziweiSubtopicId', defaultPromptState.ziweiSubtopicId),
     ziweiShortcutMode: getString(params, 'ziweiShortcutMode', defaultPromptState.ziweiShortcutMode),
     ziweiQuickQuestion: getString(
       params,
@@ -860,6 +917,12 @@ export function parsePromptState(params: URLSearchParams): QueryPromptState {
     ziweiScopeDate: getString(params, 'ziweiScopeDate', defaultPromptState.ziweiScopeDate),
     astrolabeTopic: parseAstrolabeTopic(
       getString(params, 'astrolabeTopic', defaultPromptState.astrolabeTopic),
+    ),
+    astrolabeTopicId: getString(params, 'astrolabeTopicId', defaultPromptState.astrolabeTopicId),
+    astrolabeSubtopicId: getString(
+      params,
+      'astrolabeSubtopicId',
+      defaultPromptState.astrolabeSubtopicId,
     ),
     astrolabeShortcutMode: getString(
       params,

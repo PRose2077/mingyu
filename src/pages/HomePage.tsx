@@ -10,7 +10,10 @@ import {
   QuestionInspirationModal,
   type QuestionInspirationSection,
 } from '@/components/QuestionInspirationModal';
-import { SupplementaryInfoModal } from '@/components/SupplementaryInfoModal';
+import {
+  SupplementaryInfoModal,
+  type SupplementaryInfoModalField,
+} from '@/components/SupplementaryInfoModal';
 import { useActivePersonalCase } from '@/hooks/useActivePersonalCase';
 import { useBirthPlace } from '@/hooks/useBirthPlace';
 import { buildChartFeaturePathForCase, buildDivinationRecordPath } from '@/lib/case-navigation';
@@ -41,6 +44,7 @@ import {
   type HomeModeId,
 } from '@/lib/workspace';
 import { BirthPlaceModal } from './InputPage.BirthPlaceModal';
+import { HomeSelectionDialog, type HomeSelectionOption } from './HomePage.SelectionDialog';
 
 const modeCopy: Record<HomeModeId, { heading: string; placeholder: string }> = {
   chart: {
@@ -74,8 +78,11 @@ export function HomePage() {
   const [preferences, setPreferences] = useState(readWorkspacePreferences);
   const [questionDraft, setQuestionDraft] = useState('');
   const [supplementaryInfoDraft, setSupplementaryInfoDraft] = useState('');
+  const [temporaryGender, setTemporaryGender] = useState<'' | '男' | '女'>('');
+  const [temporaryBirthYear, setTemporaryBirthYear] = useState('');
   const [isSupplementaryInfoModalOpen, setIsSupplementaryInfoModalOpen] = useState(false);
   const [isQuestionInspirationOpen, setIsQuestionInspirationOpen] = useState(false);
+  const [selectionDialog, setSelectionDialog] = useState<'algorithm' | 'case' | null>(null);
   const [inspirationCategory, setInspirationCategory] = useState('近期');
   const [inspirationSearch, setInspirationSearch] = useState('');
   const [selectedChartFeature, setSelectedChartFeature] = useState<ChartWorkspaceId>(
@@ -122,37 +129,97 @@ export function HomePage() {
     () => orderedFeatures.filter((feature) => isDivinationWorkspaceId(feature.id)),
     [orderedFeatures],
   );
-  const chartOptions = useMemo<DropdownSelectOption<string>[]>(
-    () => chartFeatures.map((feature) => ({ value: feature.id, label: feature.label })),
+  const chartOptions = useMemo<HomeSelectionOption[]>(
+    () =>
+      chartFeatures.map((feature) => ({
+        value: feature.id,
+        label: feature.label,
+        description: feature.description,
+      })),
     [chartFeatures],
   );
-  const divinationOptions = useMemo<DropdownSelectOption<string>[]>(
-    () => divinationFeatures.map((feature) => ({ value: feature.id, label: feature.label })),
+  const divinationOptions = useMemo<HomeSelectionOption[]>(
+    () =>
+      divinationFeatures.map((feature) => ({
+        value: feature.id,
+        label: feature.label,
+        description: feature.description,
+      })),
     [divinationFeatures],
   );
-  const instantOptions = useMemo<DropdownSelectOption<string>[]>(
+  const instantOptions = useMemo<HomeSelectionOption[]>(
     () =>
       INSTANT_CHART_DEFINITIONS.map((definition) => ({
         value: definition.type,
         label: definition.label,
+        description: definition.description,
       })),
     [],
   );
-  const caseOptions = useMemo<DropdownSelectOption<string>[]>(
+  const caseOptions = useMemo<HomeSelectionOption[]>(
     () => [
       {
         value: TEMPORARY_CASE_VALUE,
         label: '不指定案例',
-        triggerLabel: '临时档案',
+        description: '使用临时档案，本次自行填写求测资料。',
       },
       ...sortPersonalCasesForQuickSwitch(cases).map((record) => ({
         value: record.id,
-        label: `${record.name} · ${record.birthText}`,
-        triggerLabel: record.name,
+        label: record.name,
+        description: `${record.input.gender === 'male' ? '男' : '女'} · ${record.birthText}`,
       })),
     ],
     [cases],
   );
+  const effectiveGender = activeCase
+    ? activeCase.input.gender === 'male'
+      ? '男'
+      : '女'
+    : temporaryGender;
+  const effectiveBirthYear = activeCase ? activeCase.input.year : temporaryBirthYear;
+  const hasSupplementaryInfo = Boolean(
+    supplementaryInfoDraft.trim() ||
+    (activeCaseId === null && (temporaryGender || temporaryBirthYear)),
+  );
+  const homeSupplementaryFields = useMemo<readonly SupplementaryInfoModalField[]>(() => {
+    if (activeCaseId !== null) {
+      return [
+        {
+          key: 'supplementaryInfo',
+          label: '背景与细节',
+          placeholder: '补充已知情况、现实限制或期待结果（可选）',
+          rows: 5,
+        },
+      ];
+    }
+    return [
+      {
+        key: 'gender',
+        label: '求测人性别（可选）',
+        type: 'select',
+        options: [
+          { value: '', label: '不填（未指定）' },
+          { value: '男', label: '男' },
+          { value: '女', label: '女' },
+        ],
+      },
+      {
+        key: 'birthYear',
+        label: '出生年份（可选）',
+        type: 'text',
+        placeholder: '例如 1998',
+        inputMode: 'numeric',
+        maxLength: 4,
+      },
+      {
+        key: 'supplementaryInfo',
+        label: '背景与细节',
+        placeholder: '补充已知情况、现实限制或期待结果（可选）',
+        rows: 4,
+        fullWidth: true,
+      },
+    ];
+  }, [activeCaseId]);
   const inspirationSections = useMemo<QuestionInspirationSection[]>(() => {
     const keyword = inspirationSearch.trim();
     return inspirationCategories
@@ -288,7 +355,13 @@ export function HomePage() {
         activeCase
           ? buildChartFeaturePathForCase(activeCase, selectedChartFeature)
           : buildWorkspaceFeaturePath(selectedChartFeature),
-        { state: buildWorkspaceLaunchState(question, { supplementaryInfo }) },
+        {
+          state: buildWorkspaceLaunchState(question, {
+            supplementaryInfo,
+            gender: effectiveGender,
+            birthYear: effectiveBirthYear,
+          }),
+        },
       );
       return;
     }
@@ -297,6 +370,8 @@ export function HomePage() {
         state: buildWorkspaceLaunchState(question, {
           autoSubmit: Boolean(question) && selectedDivinationFeature !== 'almanac',
           supplementaryInfo,
+          gender: effectiveGender,
+          birthYear: effectiveBirthYear,
         }),
       });
       return;
@@ -412,38 +487,43 @@ export function HomePage() {
               </button>
               <button
                 type="button"
-                className={supplementaryInfoDraft.trim() ? 'is-active' : ''}
+                className={hasSupplementaryInfo ? 'is-active' : ''}
                 aria-haspopup="dialog"
                 aria-expanded={isSupplementaryInfoModalOpen}
                 onClick={() => setIsSupplementaryInfoModalOpen(true)}
               >
-                补充信息{supplementaryInfoDraft.trim() ? ' · 已填写' : ''}
+                补充信息{hasSupplementaryInfo ? ' · 已填写' : ''}
               </button>
             </div>
             <div className="workspace-home-composer-footer">
               <div className="workspace-home-algorithm">
-                <DropdownSelect<string>
-                  value={selectedAlgorithm}
-                  options={algorithmOptions}
-                  onChange={selectAlgorithm}
-                  ariaLabel="选择算法"
-                  prefix="算法"
-                  variant="field"
-                  favoriteValue={favoriteAlgorithmValue}
-                  favoriteLabel={favoriteAlgorithmLabel}
-                  onFavoriteChange={favoriteAlgorithm}
-                />
+                <button
+                  type="button"
+                  className="workspace-ui-dropdown-trigger is-field"
+                  aria-label="选择术数"
+                  aria-haspopup="dialog"
+                  aria-expanded={selectionDialog === 'algorithm'}
+                  onClick={() => setSelectionDialog('algorithm')}
+                >
+                  <span className="workspace-ui-dropdown-prefix">术数</span>
+                  <span>
+                    {algorithmOptions.find((option) => option.value === selectedAlgorithm)?.label}
+                  </span>
+                </button>
               </div>
               {activeMode !== 'instant' ? (
                 <div className="workspace-home-case-select">
-                  <DropdownSelect<string>
-                    value={activeCaseId ?? TEMPORARY_CASE_VALUE}
-                    options={caseOptions}
-                    onChange={(value) => selectCase(value === TEMPORARY_CASE_VALUE ? null : value)}
-                    ariaLabel="切换案例"
-                    prefix="案例"
-                    variant="field"
-                  />
+                  <button
+                    type="button"
+                    className="workspace-ui-dropdown-trigger is-field"
+                    aria-label="选择案例"
+                    aria-haspopup="dialog"
+                    aria-expanded={selectionDialog === 'case'}
+                    onClick={() => setSelectionDialog('case')}
+                  >
+                    <span className="workspace-ui-dropdown-prefix">案例</span>
+                    <span>{activeCase?.name ?? '临时档案'}</span>
+                  </button>
                 </div>
               ) : (
                 <div className="workspace-home-time-context">
@@ -497,6 +577,30 @@ export function HomePage() {
           </form>
         </div>
       </div>
+      {selectionDialog ? (
+        <HomeSelectionDialog
+          key={selectionDialog}
+          title={selectionDialog === 'algorithm' ? '选择术数' : '选择案例'}
+          searchPlaceholder={
+            selectionDialog === 'algorithm' ? '搜索术数名称或适用场景' : '搜索姓名或出生资料'
+          }
+          options={selectionDialog === 'algorithm' ? algorithmOptions : caseOptions}
+          value={
+            selectionDialog === 'algorithm'
+              ? selectedAlgorithm
+              : (activeCaseId ?? TEMPORARY_CASE_VALUE)
+          }
+          onSelect={(value) => {
+            if (selectionDialog === 'algorithm') selectAlgorithm(value);
+            else selectCase(value === TEMPORARY_CASE_VALUE ? null : value);
+            setSelectionDialog(null);
+          }}
+          onClose={() => setSelectionDialog(null)}
+          favoriteValue={selectionDialog === 'algorithm' ? favoriteAlgorithmValue : undefined}
+          favoriteLabel={favoriteAlgorithmLabel}
+          onFavoriteChange={selectionDialog === 'algorithm' ? favoriteAlgorithm : undefined}
+        />
+      ) : null}
       {instantBirthPlace.isBirthPlaceModalOpen ? (
         <BirthPlaceModal birthPlace={instantBirthPlace} purpose="observer" />
       ) : null}
@@ -522,16 +626,24 @@ export function HomePage() {
       ) : null}
       {isSupplementaryInfoModalOpen ? (
         <SupplementaryInfoModal
-          fields={[
-            {
-              key: 'supplementaryInfo',
-              label: '背景与细节',
-              placeholder: '补充已知情况、现实限制或期待结果（可选）',
-              rows: 5,
-            },
-          ]}
-          values={{ supplementaryInfo: supplementaryInfoDraft }}
-          onSave={(values) => setSupplementaryInfoDraft(values.supplementaryInfo ?? '')}
+          fields={homeSupplementaryFields}
+          values={{
+            supplementaryInfo: supplementaryInfoDraft,
+            gender: temporaryGender,
+            birthYear: temporaryBirthYear,
+          }}
+          description={
+            activeCaseId !== null
+              ? '当前已指定案例，可补充与问题直接相关的背景与细节。'
+              : '临时档案不指定案例。可填写求测人性别、出生年份或背景细节，未填写的项目不会进入解读。'
+          }
+          onSave={(values) => {
+            setSupplementaryInfoDraft(values.supplementaryInfo ?? '');
+            if (activeCaseId === null) {
+              setTemporaryGender((values.gender as '' | '男' | '女') || '');
+              setTemporaryBirthYear(values.birthYear?.replace(/[^\d]/g, '').slice(0, 4) ?? '');
+            }
+          }}
           onClose={() => setIsSupplementaryInfoModalOpen(false)}
         />
       ) : null}

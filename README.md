@@ -8,6 +8,16 @@
 
 命语是一套免费开源的在线算命、占卜排盘与 AI 解读提示词工具。输入出生时间或所问之事，即可完成高精度排盘，并生成可直接交给任意大模型解读的完整提示词。
 
+### ⚡ 一键接入（Agent 技能 & 在线 MCP）
+
+- **Agent Skill（推荐 · 免配置一句话安装）**：
+  ```bash
+  npx skills add Brhiza/mingyu --skill mingyu -g -y
+  ```
+- **在线 Remote MCP（云端直连 · 零依赖）**：
+  - **Claude Code**：`claude mcp add mingyu --transport sse https://aov.cc/mcp`
+  - **Cursor / Windsurf / VS Code**：直接添加 SSE 类型的 Server URL：`https://aov.cc/mcp`
+
 ---
 
 ## 📿 功德箱
@@ -35,22 +45,24 @@
 
 ## 🔮 支持功能
 
-| 分类 | 术数方法 | 主要功能 |
-| :--- | :--- | :--- |
-| **命理运势** | 八字命理、紫微斗数、八字紫微合参、西方星盘、七政四余 | 支持真太阳时换算、大运流年流月流日细盘、三方四正、庙旺四化、神煞与合盘分析 |
-| **周易占卜** | 六爻纳甲、梅花易数 | 支持手摇/指定卦象、京房八宫纳甲、六亲六神、世应动变、体用生克与四时旺衰 |
-| **三式绝学** | 奇门遁甲、大六壬、金口诀、太乙神数、皇极经世 | 支持时家转盘/飞盘奇门、月将天地盘四课三传、阴阳五用、年计七十二局与元会运世 |
-| **牌卡灵签** | 西方塔罗牌、雷诺曼牌、三山国王灵签、小六壬 | 包含 78 张塔罗全牌阵、36 张雷诺曼及大 Tableau、揭西祖庙 92 签全篇签谱 |
-| **择日风水** | 黄历择吉、八宅明镜、玄空飞星、五运六气 | 建除十二神与宜忌排查、东四西四命卦、三元九运飞星排盘与客主加临 |
+| 分类         | 术数方法                                             | 主要功能                                                                                       |
+| :----------- | :--------------------------------------------------- | :--------------------------------------------------------------------------------------------- |
+| **命理运势** | 八字命理、紫微斗数、八字紫微合参、西方星盘、七政四余 | 支持真太阳时换算、大运流年流月流日细盘、三方四正、庙旺四化、神煞、合盘分析，以及七政行限与流曜 |
+| **周易占卜** | 六爻纳甲、梅花易数                                   | 支持手摇/指定卦象、京房八宫纳甲、六亲六神、世应动变、体用生克与四时旺衰                        |
+| **三式绝学** | 奇门遁甲、大六壬、金口诀、太乙神数、皇极经世         | 支持时家转盘/飞盘奇门、月将天地盘四课三传、阴阳五用、年计七十二局与元会运世                    |
+| **牌卡灵签** | 西方塔罗牌、雷诺曼牌、三山国王灵签、小六壬           | 包含 78 张塔罗全牌阵、36 张雷诺曼及大 Tableau、揭西祖庙 92 签全篇签谱                          |
+| **择日风水** | 黄历择吉、八宅明镜、玄空飞星、五运六气               | 建除十二神与宜忌排查、东四西四命卦、三元九运飞星排盘、流年流月紫白加临与客主加临               |
 
 ---
 
 ## 🛠️ 开发者接入
 
 ### 1. 核心算法包 `mingyu-core`
+
 ```bash
 npm install mingyu-core
 ```
+
 ```typescript
 import { generateBazi, generateLiuyao, drawTarotSpread } from 'mingyu-core';
 
@@ -63,22 +75,29 @@ const liuyao = generateLiuyao(new Date());
 // 抽塔罗牌
 const tarot = drawTarotSpread('celtic');
 ```
+
 详见 [mingyu-core 文档](packages/core/README.md)。
 
 ### 2. 公开 REST API
+
 基础地址：`https://aov.cc/api/v1`
-* [API 接口文档](docs/api.md) · [OpenAPI 规范](https://aov.cc/api/v1/openapi.json) · [LLMs.txt](https://aov.cc/llms.txt)
+
+- [API 接口文档](docs/api.md) · [OpenAPI 规范](https://aov.cc/api/v1/openapi.json) · [LLMs.txt](https://aov.cc/llms.txt)
 
 ### 3. MCP Server
-支持 Claude Desktop、Cursor 等 MCP 客户端直接调用：
-```bash
-pnpm mcp
-```
-详见 [MCP 服务文档](mcp/README.md)。
+
+- **在线 Remote MCP（免安装直接接入）**：支持在 Cursor、Windsurf、Claude Desktop 中直接配置 Streamable HTTP 远程端点：`https://aov.cc/mcp`
+- **本地 npx CLI（开箱即用）**：
+  ```bash
+  npx -y mingyu-mcp
+  ```
+
+（本地源码开发也可通过 `pnpm mcp` 启动，详见 [MCP 服务文档](mcp/README.md)）
 
 ### 4. Agent Skill
+
 ```bash
-npx skills add Brhiza/mingyu --skill aov-mingyu-api -g -y
+npx skills add Brhiza/mingyu --skill mingyu -g -y
 ```
 
 ---
@@ -86,6 +105,8 @@ npx skills add Brhiza/mingyu --skill aov-mingyu-api -g -y
 ## 📱 Android 原生应用
 
 提供适配移动端的 Android 原生 APK，支持在生成排盘后**一键唤起已安装的 AI 应用**（如 ChatGPT、Claude、Kimi 等）直接对话，API Key 仅保存在本地设备。
+
+正式 APK 发布后会同步到 `download.aov.cc` 并由 Cloudflare CDN 分发；应用默认使用官方下载，失败时回退到 GitHub Release。
 
 ```bash
 # 同步 Web 资源到 Android 工程
@@ -142,6 +163,12 @@ pnpm build
 
 ---
 
+## 💬 交流
+
+QQ群：命语 Mingyu 技术交流群（1080947018）
+
+---
+
 ## ⚖️ 免责声明
 
 本工具提供的排盘结果与 AI 解读提示词仅供传统文化研究与休闲娱乐参考，不构成且不可替代医疗、心理、法律、投资等专业建议。
@@ -150,4 +177,4 @@ pnpm build
 
 ## 📄 开源协议
 
-本项目基于 MIT License 协议开源。
+本项目基于 [AGPL-3.0-only](LICENSE) 协议开源。

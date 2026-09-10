@@ -58,7 +58,7 @@ function getInterRelationToOriginalTi(
 ): string {
   if (!VALID_WUXING.has(sourceElement) || !VALID_WUXING.has(originalTiElement)) {
     throw new Error(
-      `梅花易数互卦五行无效：${sourceLabel}${sourceElement || '空'}、原体${originalTiElement || '空'}。`,
+      `梅花易数${sourceLabel}五行无效：${sourceLabel}${sourceElement || '空'}、原体${originalTiElement || '空'}。`,
     );
   }
   if (sourceElement === originalTiElement) return `${sourceLabel}与原体比和`;
@@ -69,6 +69,109 @@ function getInterRelationToOriginalTi(
   throw new Error(
     `梅花易数无法判断${sourceLabel}${sourceElement}与原体${originalTiElement}的关系。`,
   );
+}
+
+function getMeihuaTiYongSeasonEvaluation(
+  relation: string,
+  tiSeason: string,
+  yongSeason: string,
+): string {
+  const isTiStrong = tiSeason === '旺' || tiSeason === '相';
+  const isYongStrong = yongSeason === '旺' || yongSeason === '相';
+
+  switch (relation) {
+    case '用克体':
+      if (isTiStrong && !isYongStrong) {
+        return '体旺用衰，受克有惊无险，难伤大体';
+      }
+      if (!isTiStrong && isYongStrong) {
+        return '用旺体衰，克势严峻，事多受制受损，大宜慎重';
+      }
+      return '用卦克体，诸事受阻阻隔，防外力施压';
+    case '体克用':
+      if (isTiStrong) {
+        return '体旺克用，胜任其事，主导局势，操之在我';
+      }
+      return '体虽克用但自身气衰，勉力支撑，防劳而少功';
+    case '用生体':
+      if (isYongStrong) {
+        return '用旺生体，外力生扶充沛，贵人相助，大吉之象';
+      }
+      return '用生体，略得外力照拂，助力虽浅亦可受益';
+    case '体生用':
+      return '体生于用，泄我元气，防过度付出或破耗消耗';
+    case '比和':
+      return `体用同五行，比和相应；体卦${tiSeason}、用卦${yongSeason}，实际助力结合月令、互变与动爻判断`;
+    default:
+      return '体用各安其位，顺时而动';
+  }
+}
+
+/**
+ * 依据《梅花易数》“用为始，互为中，变为终”的事态三阶段演化趋势机
+ */
+export function evaluateMeihuaTimelineTrend(params: {
+  tiElement: string;
+  originalYongElement: string;
+  interTiElement: string;
+  interYongElement: string;
+  changedYongElement: string;
+}): {
+  trend: '先难后易' | '先顺后阻' | '始末顺畅' | '始终受制' | '中途多阻' | '平稳演进';
+  summary: string;
+} {
+  const { tiElement, originalYongElement, interTiElement, interYongElement, changedYongElement } =
+    params;
+
+  // 1. 初阶段（主卦用对体）
+  const startFavorable =
+    isSheng(originalYongElement, tiElement) || originalYongElement === tiElement;
+  const startDifficult =
+    isKe(originalYongElement, tiElement) || isSheng(tiElement, originalYongElement);
+
+  // 2. 中阶段（互卦对原体）
+  const midDifficult = isKe(interTiElement, tiElement) || isKe(interYongElement, tiElement);
+
+  // 3. 终阶段（变卦用对原体）
+  const endFavorable = isSheng(changedYongElement, tiElement) || changedYongElement === tiElement;
+  const endDifficult =
+    isKe(changedYongElement, tiElement) || isSheng(tiElement, changedYongElement);
+
+  if (startDifficult && endFavorable) {
+    return {
+      trend: '先难后易',
+      summary: '初始受制或多周折，中后程得生助转顺，终成吉局',
+    };
+  }
+  if (startFavorable && endDifficult) {
+    return {
+      trend: '先顺后阻',
+      summary: '起步顺遂得利，中后程克泄交加阻力渐显，防后继乏力',
+    };
+  }
+  if (startFavorable && endFavorable && !midDifficult) {
+    return {
+      trend: '始末顺畅',
+      summary: '事之初中终三阶段皆得生扶比和，全盘通畅无大碍',
+    };
+  }
+  if (startDifficult && endDifficult && midDifficult) {
+    return {
+      trend: '始终受制',
+      summary: '初中终重重受克泄制约，阻力严峻，大宜退守蓄力',
+    };
+  }
+  if (midDifficult) {
+    return {
+      trend: '中途多阻',
+      summary: '起步与结局尚可，惟中途互卦见克制，过程中须防突发变故',
+    };
+  }
+
+  return {
+    trend: '平稳演进',
+    summary: '体用互变各有所制，局势循序渐进，随事态应时权变',
+  };
 }
 
 /**
@@ -363,6 +466,18 @@ export function generateMeihua(customDate?: Date, settings?: MeihuaSettings): Me
         changedTiYong.tiGua.element,
       ),
       tiYongRaw: getTiYongRelation(yongGua.element, tiGua.element),
+      tiYongSeasonEvaluation: getMeihuaTiYongSeasonEvaluation(
+        getTiYongRelation(yongGua.element, tiGua.element),
+        tiSeasonState,
+        yongSeasonState,
+      ),
+      timelineTrend: evaluateMeihuaTimelineTrend({
+        tiElement: tiGua.element,
+        originalYongElement: yongGua.element,
+        interTiElement: interTiGua.element,
+        interYongElement: interYongGua.element,
+        changedYongElement: changedTiYong.yongGua.element,
+      }),
       yingQi: estimateYingQi({
         movingYaoIndex,
         upperTrigramIndex,

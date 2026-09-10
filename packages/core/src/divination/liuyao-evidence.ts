@@ -6,6 +6,9 @@ import type {
 } from '../types/divination';
 import { isKe, isLiuhai, isLiuhe, isSanxing, isSheng } from '../ganzhi';
 import { formatPromptEvidenceBundle } from '../prompt-evidence/format';
+import { MingyuCoreError } from '../shared/result';
+import { generateYarrow } from './algorithms/yarrow';
+import type { YarrowResult, YarrowLine } from './algorithms/yarrow';
 import type { PromptEvidenceBundle, PromptEvidenceItem } from '../prompt-evidence/types';
 import {
   buildRandomTraceFact,
@@ -14,7 +17,52 @@ import {
 } from '../shared/random';
 
 export type LiuyaoEvidenceTopic = 'general' | 'ganqing' | 'shiye' | 'caifu' | 'guaishen';
+
+function equalYarrowLines(expected: readonly YarrowLine[], actual?: readonly YarrowLine[]) {
+  const fields = [
+    'initial',
+    'left',
+    'right',
+    'hanging',
+    'leftRemainder',
+    'rightRemainder',
+    'removed',
+    'remaining',
+  ] as const;
+  return (
+    Array.isArray(actual) &&
+    actual.length === expected.length &&
+    expected.every((line, index) => {
+      const other = actual[index];
+      return (
+        other?.value === line.value &&
+        Array.isArray(other.changes) &&
+        other.changes.length === line.changes.length &&
+        line.changes.every((step, turn) =>
+          fields.every((field) => step[field] === other.changes[turn]?.[field]),
+        )
+      );
+    })
+  );
+}
+
+function formatYarrowProcess(yarrow: Omit<YarrowResult, 'randomTrace'>): string {
+  return [
+    `分堆方式：${yarrow.samplingModel}`,
+    ...yarrow.lines.map(
+      (line, index) =>
+        `第${index + 1}爻：${line.changes
+          .map(
+            (step, turn) =>
+              `第${turn + 1}变${step.initial}策，左${step.left}右${step.right}，右挂一，左余${step.leftRemainder}右余${step.rightRemainder}，去${step.removed}余${step.remaining}`,
+          )
+          .join('；')}，爻值${line.value}`,
+    ),
+  ].join('；');
+}
 export type LiuyaoGodRole = '用神' | '原神' | '忌神' | '仇神';
+
+const LIUYAO_EFFECTIVE_LIFE_STAGES = new Set(['长生', '帝旺', '墓', '绝']);
 
 export interface LiuyaoEvidenceOptions {
   topic?: LiuyaoEvidenceTopic;
@@ -116,6 +164,9 @@ export interface LiuyaoLineFact {
   };
   traditionalRelations: {
     twelveStage?: string;
+    dayLifeStage?: string;
+    movingLifeStages?: LiuyaoYaoDetail['movingLifeStages'];
+    changedLifeStage?: string;
     sanxingType?: string;
     liuhePartner?: string;
     isLiuhai: boolean;
@@ -163,6 +214,7 @@ export interface LiuyaoGenerationFact {
   methodLabel: string;
   yaoValues: number[];
   coinThrows: NonNullable<NonNullable<LiuyaoData['generation']>['coinThrows']>;
+  yarrow?: NonNullable<LiuyaoData['generation']>['yarrow'];
   expectedLineCount: 6;
   recordedLineCount: number;
   promptText: string;
@@ -419,31 +471,62 @@ function formatYao(reference: LiuyaoYaoReference) {
 function buildGenerationFact(data: LiuyaoData): LiuyaoGenerationFact {
   const method = data.generation?.method ?? '未记录';
   const methodLabel =
-    method === 'coins'
-      ? '模拟三钱起卦'
-      : method === 'manual'
-        ? '手工录入六爻值'
-        : method === 'time'
-          ? '时间起卦'
-          : '旧结果未记录起卦方式';
+    method === 'yarrow'
+      ? '蓍草起卦'
+      : method === 'coins'
+        ? '模拟三钱起卦'
+        : method === 'manual'
+          ? '手工录入六爻值'
+          : method === 'time'
+            ? '时间起卦'
+            : '旧结果未记录起卦方式';
   const coinThrows = (data.generation?.coinThrows ?? []).map((item) => ({
     coins: [...item.coins] as [2 | 3, 2 | 3, 2 | 3],
     total: item.total,
   }));
-  const recordedLineCount = method === 'manual' ? data.yaoArray.length : coinThrows.length;
+  const yarrow = data.generation?.yarrow;
+  if (method === 'yarrow') {
+    if (
+      !yarrow ||
+      !Array.isArray(yarrow.lines) ||
+      yarrow.lines.length !== 6 ||
+      !yarrow.lines.every((line) => Array.isArray(line.changes) && line.changes.length === 3)
+    ) {
+      throw new Error('蓍草起卦必须记录六爻十八变。');
+    }
+    const verified = generateYarrow({
+      splits: yarrow.lines.flatMap((line) => line.changes.map((step) => step.left)),
+    });
+    if (
+      !equalYarrowLines(verified.lines, yarrow.lines) ||
+      JSON.stringify(verified.yaos) !== JSON.stringify(yarrow.yaos) ||
+      JSON.stringify(verified.yaos) !== JSON.stringify(data.yaoArray) ||
+      !['手工分堆', '余数等概率，类内分堆等概率'].includes(yarrow.samplingModel)
+    ) {
+      throw new Error('蓍草分堆过程与爻值不一致。');
+    }
+  }
+  const recordedLineCount =
+    method === 'yarrow'
+      ? yarrow!.lines.length
+      : method === 'manual'
+        ? data.yaoArray.length
+        : coinThrows.length;
   const status =
     method !== '未记录' && recordedLineCount === 6 ? ('可核验' as const) : ('来源链缺失' as const);
   const detail =
-    method === 'manual'
-      ? `手工爻值为${data.yaoArray.join('、') || '未列'}`
-      : coinThrows.length
-        ? coinThrows
-            .map(
-              (item, index) =>
-                `第${index + 1}爻计算样本${item.coins.join('+')}=${item.total}（${item.total === 6 ? '老阴' : item.total === 7 ? '少阳' : item.total === 8 ? '少阴' : '老阳'}）`,
-            )
-            .join('；')
-        : '未附逐爻生成记录';
+    method === 'yarrow'
+      ? formatYarrowProcess(yarrow!)
+      : method === 'manual'
+        ? `手工爻值为${data.yaoArray.join('、') || '未列'}`
+        : coinThrows.length
+          ? coinThrows
+              .map(
+                (item, index) =>
+                  `第${index + 1}爻计算样本${item.coins.join('+')}=${item.total}（${item.total === 6 ? '老阴' : item.total === 7 ? '少阳' : item.total === 8 ? '少阴' : '老阳'}）`,
+              )
+              .join('；')
+          : '未附逐爻生成记录';
   return {
     key: `generation:liuyao:${method}`,
     status,
@@ -451,11 +534,16 @@ function buildGenerationFact(data: LiuyaoData): LiuyaoGenerationFact {
     methodLabel,
     yaoValues: [...data.yaoArray],
     coinThrows,
+    ...(method === 'yarrow' ? { yarrow } : {}),
     expectedLineCount: 6,
     recordedLineCount,
     promptText: `起卦方式为${methodLabel}；${detail}${status === '来源链缺失' ? `；当前仅记录${recordedLineCount}/6爻来源，不能完整核验起卦链` : ''}`,
     sources: [
-      method === 'manual' ? '调用方手工录入的六个爻值' : '六爻逐爻三钱生成记录',
+      method === 'yarrow'
+        ? '《周易衍义》揲蓍十八变与分堆记录'
+        : method === 'manual'
+          ? '调用方手工录入的六个爻值'
+          : '六爻逐爻三钱生成记录',
       '六爻起卦方式与原始爻值结果',
     ],
     limitation: GENERATION_FACT_LIMITATION,
@@ -468,6 +556,14 @@ function buildVisibleReference(
   dayBranch: string,
 ): LiuyaoYaoReference {
   const changeRelations = getChangeRelations(yao);
+  const movingStageSupport =
+    yao.movingLifeStages
+      ?.filter((item) => item.stage === '长生' || item.stage === '帝旺')
+      .map((item) => `第${item.position}爻${item.branch}${item.stage}`) ?? [];
+  const movingStageConstraints =
+    yao.movingLifeStages
+      ?.filter((item) => item.stage === '墓' || item.stage === '绝')
+      .map((item) => `第${item.position}爻${item.branch}${item.stage}`) ?? [];
   const support = [
     yao.isWorld ? '临世' : '',
     yao.isResponse ? '临应' : '',
@@ -480,6 +576,11 @@ function buildVisibleReference(
     isLiuhe(yao.najiaDizhi, dayBranch) ? '合日辰' : '',
     changeRelations.includes('回头生') ? '回头生' : '',
     yao.changeDirection === '化进神' ? '化进神' : '',
+    yao.dayLifeStage === '长生' || yao.dayLifeStage === '帝旺' ? `日辰${yao.dayLifeStage}` : '',
+    ...movingStageSupport,
+    yao.changedLifeStage === '长生' || yao.changedLifeStage === '帝旺'
+      ? `化${yao.changedLifeStage}`
+      : '',
   ].filter(Boolean);
   const constraints = [
     yao.isVoid ? '本爻空亡' : '',
@@ -489,6 +590,11 @@ function buildVisibleReference(
       ? `月令${yao.seasonState}`
       : '',
     yao.isRiMu ? '入日墓' : '',
+    yao.isDongMu ? '入动墓' : '',
+    yao.isHuaMu ? '动而化墓' : '',
+    yao.dayLifeStage === '绝' ? '日辰逢绝' : '',
+    ...movingStageConstraints.filter((item) => item.endsWith('绝')),
+    yao.changedLifeStage === '绝' ? '动而化绝' : '',
     changeRelations.includes('回头克') ? '回头克' : '',
     changeRelations.includes('回头冲') ? '回头冲' : '',
     changeRelations.includes('化空') || yao.changedYao?.isVoid ? '变爻空亡' : '',
@@ -581,6 +687,8 @@ function buildLineFacts(
             ? '日辰冲动'
             : '',
       yao.isRiMu ? '入日墓' : '',
+      yao.isDongMu ? '入动墓' : '',
+      yao.isHuaMu ? '动而化墓' : '',
       isLiuhai(yao.najiaDizhi, dayBranch) ? '与日辰相害' : '',
       isSanxing(yao.najiaDizhi, dayBranch) ? '与日辰成刑' : '',
     ].filter(Boolean);
@@ -590,6 +698,9 @@ function buildLineFacts(
         ? '暗动'
         : '静爻';
     const changeRelations = getChangeRelations(yao);
+    const effectiveMovingLifeStages = yao.movingLifeStages?.filter((item) =>
+      ['长生', '帝旺', '墓', '绝'].includes(item.stage),
+    );
     const changedYao = yao.changedYao
       ? {
           sixRelative: yao.changedYao.liuqin,
@@ -610,9 +721,14 @@ function buildLineFacts(
       monthRelations.join('、'),
       dayRelations.join('、'),
       yao.isVoid ? '本爻空亡' : '',
-      yao.shiErGong ? `十二宫${yao.shiErGong}` : '',
+      yao.dayLifeStage && ['长生', '帝旺', '墓', '绝'].includes(yao.dayLifeStage)
+        ? `日辰生旺墓绝${yao.dayLifeStage}`
+        : '',
+      effectiveMovingLifeStages?.length
+        ? `动爻生旺墓绝${effectiveMovingLifeStages.map((item) => `第${item.position}爻${item.branch}${item.stage}`).join('、')}`
+        : '',
       changedYao
-        ? `化${changedYao.sixRelative}${changedYao.branch}${changedYao.wuxing}${changedYao.direction ? `、${changedYao.direction}` : ''}${changedYao.relations.length ? `、${changedYao.relations.join('、')}` : changedYao.isVoid ? '、变爻空亡' : ''}`
+        ? `化${changedYao.sixRelative}${changedYao.branch}${changedYao.wuxing}${yao.changedLifeStage && LIUYAO_EFFECTIVE_LIFE_STAGES.has(yao.changedLifeStage) ? `、化${yao.changedLifeStage}` : ''}${changedYao.direction ? `、${changedYao.direction}` : ''}${changedYao.relations.length ? `、${changedYao.relations.join('、')}` : changedYao.isVoid ? '、变爻空亡' : ''}`
         : '',
     ]
       .filter(Boolean)
@@ -637,6 +753,9 @@ function buildLineFacts(
       dayState: { branch: dayBranch, relations: dayRelations },
       traditionalRelations: {
         twelveStage: yao.shiErGong,
+        dayLifeStage: yao.dayLifeStage,
+        movingLifeStages: yao.movingLifeStages,
+        changedLifeStage: yao.changedLifeStage,
         sanxingType: yao.isSanxing ? yao.sanxingType : undefined,
         liuhePartner: yao.isLiuhe ? yao.liuhePartner : undefined,
         isLiuhai: Boolean(yao.isLiuhai),
@@ -670,7 +789,7 @@ function buildHiddenSpiritFacts(data: LiuyaoData): LiuyaoHiddenSpiritFact[] {
       coveringLine: spirit.underYao,
       support: reference.support,
       constraints: reference.constraints,
-      promptText: `第${spirit.position}爻伏神${spirit.sixRelative}${spirit.najiaDizhi}${spirit.wuxing}，飞神${spirit.underYao.sixRelative}${spirit.underYao.najiaDizhi}${spirit.underYao.wuxing}覆盖${spirit.isVoid ? '，伏神空亡' : ''}`,
+      promptText: `第${spirit.position}爻伏神${spirit.sixRelative}${spirit.najiaDizhi}${spirit.wuxing}，飞神${spirit.underYao.sixRelative}${spirit.underYao.najiaDizhi}${spirit.underYao.wuxing}覆盖${spirit.isVoid ? '，伏神空亡' : ''}${spirit.interactionEffect ? `，${spirit.interactionEffect}` : ''}`,
       sources: ['本宫首卦六亲全集与当前本卦六亲差集', '当前爻位飞伏配对与旬空计算'],
       limitation: HIDDEN_SPIRIT_FACT_LIMITATION,
     };
@@ -1145,7 +1264,7 @@ function buildLimitationFacts(params: {
       ownerFactKeys: [params.generationFact.key, params.randomFact.key],
       promptText:
         '起卦来源与随机轨迹只用于核验六个爻值如何录入、生成或重放；模拟三钱和随机重放只记录生成过程，不等同于现实投掷，也不提高预测有效性',
-      sources: ['起卦方式、原始爻值、三钱记录与随机轨迹'],
+      sources: ['起卦方式、原始爻值、铜钱或蓍草记录与随机轨迹'],
     },
     {
       key: 'liuyao:limitation:lines-hidden-spirits',
@@ -1321,6 +1440,7 @@ export function analyzeLiuyaoEvidence(
   const methodLabel = generationFact.methodLabel;
   const generationFacts = [
     `起卦方式：${methodLabel}`,
+    generationFact.yarrow ? formatYarrowProcess(generationFact.yarrow) : '',
     ...generationFact.coinThrows.map(
       (item, index) =>
         `第${index + 1}爻计算样本：${item.coins.join('+')}=${item.total}（${item.total === 6 ? '老阴' : item.total === 7 ? '少阳' : item.total === 8 ? '少阴' : '老阳'}）`,
@@ -1328,15 +1448,59 @@ export function analyzeLiuyaoEvidence(
     generationMethod === 'manual' ? `手工爻值：${data.yaoArray.join('、')}` : '',
   ].filter(Boolean);
   const trace = data.meta?.random;
-  const expectsRandomTrace = generationMethod === 'coins' || generationMethod === 'time';
+  const expectsRandomTrace =
+    generationMethod === 'coins' ||
+    generationMethod === 'time' ||
+    (generationMethod === 'yarrow' && generationFact.yarrow?.samplingModel !== '手工分堆');
   const randomFact = buildRandomTraceFact({
     key: `random:liuyao:${generationMethod ?? 'unknown'}`,
     applicable: expectsRandomTrace,
     trace,
     processLabel: `${methodLabel}的六爻生成过程`,
-    sources: ['六爻起卦方式记录', '逐次随机投币样本与重放元数据'],
+    sources: [
+      '六爻起卦方式记录',
+      generationMethod === 'yarrow'
+        ? '蓍草分堆随机样本与重放元数据'
+        : '逐次随机投币样本与重放元数据',
+    ],
   });
   const randomFacts = formatLegacyRandomFacts(randomFact);
+  if (generationMethod === 'yarrow' && randomFact.status === '可重放') {
+    const replayed = generateYarrow({ replay: randomFact.samples });
+    if (
+      randomFact.samples.length !== 36 ||
+      !equalYarrowLines(replayed.lines, generationFact.yarrow?.lines)
+    ) {
+      throw new Error('蓍草随机轨迹与分堆记录不一致。');
+    }
+  }
+  if (generationMethod !== 'yarrow' && expectsRandomTrace && randomFact.status === '可重放') {
+    if (randomFact.samples.length !== 18) {
+      throw new MingyuCoreError({
+        code: 'LIUYAO_RANDOM_TRACE_LENGTH_INVALID',
+        category: 'validation',
+        message: '六爻三钱法随机轨迹必须包含十八个样本。',
+        field: 'meta.random.samples',
+      });
+    }
+    for (let index = 0; index < 6; index++) {
+      const coins = randomFact.samples
+        .slice(index * 3, index * 3 + 3)
+        .map((sample) => (sample < 0.5 ? 2 : 3));
+      const recordedCoins = data.generation?.coinThrows?.[index]?.coins;
+      if (
+        coins.reduce<number>((sum, coin) => sum + coin, 0) !== data.yaoArray[index] ||
+        (recordedCoins && coins.some((coin, coinIndex) => coin !== recordedCoins[coinIndex]))
+      ) {
+        throw new MingyuCoreError({
+          code: 'LIUYAO_RANDOM_TRACE_MISMATCH',
+          category: 'validation',
+          message: `第${index + 1}爻随机轨迹与投币记录或爻值不一致。`,
+          field: 'meta.random.samples',
+        });
+      }
+    }
+  }
   const timingFacts: LiuyaoTimingFact[] = [];
   lineFacts
     .filter((item) => item.activity === '明动')

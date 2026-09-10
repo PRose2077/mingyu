@@ -26,6 +26,12 @@ import {
   ziweiScopeLabelMap,
   ziweiSingleShortcutActions,
 } from './ResultPage.constants';
+import { getThematicTopicConfig, normalizeThematicTopic } from 'mingyu-core/prompt';
+import {
+  buildPromptSelectionTask,
+  getPromptSelectionSection,
+  requirePromptSelection,
+} from 'mingyu-core/prompt';
 import type { ZiweiDayOption, ZiweiMonthOption, ZiweiYearOption } from './ResultPage.types';
 
 export type PromptDraftKind = 'custom' | 'inspiration';
@@ -72,7 +78,25 @@ export function resolveZiweiTopicByBaziShortcutMode(mode: string) {
     return 'life';
   }
 
-  return ziweiSingleShortcutActions.find((item) => item.label === mode)?.topic ?? 'life';
+  const topicKey = normalizeThematicTopic(mode);
+  switch (topicKey) {
+    case 'relationship':
+      return 'relationship';
+    case 'career':
+      return 'career-wealth';
+    case 'wealth':
+      return 'career-wealth';
+    case 'health':
+      return 'health';
+    case 'academic':
+      return 'study';
+    case 'family':
+      return 'family';
+    case 'timing':
+      return 'recent';
+    default:
+      return ziweiSingleShortcutActions.find((item) => item.label === mode)?.topic ?? 'life';
+  }
 }
 
 export function resolveCompatType(
@@ -200,12 +224,72 @@ export function buildEnhancedZiweiPromptPack(payload: AnalysisPayloadV1, selecte
   });
 }
 
+function hasBaziTimeLayer(text?: string) {
+  return /大运|流年|流月|流日|岁运/.test(text?.trim() || '');
+}
+
+function hasZiweiTimeLayer(text?: string) {
+  return /大限|流年|流月|流日|流时|运限/.test(text?.trim() || '');
+}
+
+function sameBaziZiweiTimeLayer(baziText?: string, ziweiText?: string) {
+  const bazi = baziText || '';
+  const ziwei = ziweiText || '';
+  if (/流年/.test(bazi) && /流年/.test(ziwei)) return true;
+  if (/流月/.test(bazi) && /流月/.test(ziwei)) return true;
+  if (/流日/.test(bazi) && /流日/.test(ziwei)) return true;
+  if (/大运/.test(bazi) && /大限/.test(ziwei)) return true;
+  return false;
+}
+
+function resolveBaziZiweiTaskMethod(params: {
+  baziFortuneSummary?: string;
+  ziweiScopeSummary?: string;
+}) {
+  const baziTime = hasBaziTimeLayer(params.baziFortuneSummary);
+  const ziweiTime = hasZiweiTimeLayer(params.ziweiScopeSummary);
+  if (
+    baziTime &&
+    ziweiTime &&
+    sameBaziZiweiTimeLayer(params.baziFortuneSummary, params.ziweiScopeSummary)
+  ) {
+    return 'bazi-ziwei-aligned';
+  }
+  if (baziTime || ziweiTime) return 'bazi-ziwei-mismatch';
+  return 'bazi-ziwei';
+}
+
+function resolveBaziZiweiTaskText(params: {
+  baziFortuneSummary?: string;
+  ziweiScopeSummary?: string;
+  questionScopeLabel?: string;
+  topicId?: string;
+  subtopicId?: string;
+  scope?: string;
+}) {
+  const topic = normalizeThematicTopic(params.questionScopeLabel);
+  const config = getThematicTopicConfig(topic);
+  const method = resolveBaziZiweiTaskMethod(params);
+  const baseTask = config.combinedTask;
+
+  if (method === 'bazi-ziwei-aligned') {
+    return `${baseTask} 当前八字岁运与紫微运限已对齐至同一时间层，请先分别给出该时间窗口内的八字岁运生克与紫微流曜四化依据，深度交叉印证后回答问题。`;
+  }
+  if (method === 'bazi-ziwei-mismatch') {
+    return `${baseTask} 请先分别给出八字已列岁运依据和紫微已列运限依据，再交叉印证；时间层未对齐时分开陈述。`;
+  }
+  return `${baseTask} 请依据双方已列出的本命与运限结构交叉印证后回答问题。`;
+}
+
 export function buildBaziZiweiEnhancedPrompt(params: {
   baziResult: BaziChartResult;
   baziText?: string;
   ziweiText: string;
   question: string;
   questionScopeLabel?: string;
+  topicId?: string;
+  subtopicId?: string;
+  scope?: string;
   baziFortuneSummary?: string;
   ziweiScopeSummary?: string;
   isCustomQuestion?: boolean;
@@ -218,6 +302,18 @@ export function buildBaziZiweiEnhancedPrompt(params: {
     .map((item) => item?.trim())
     .filter(Boolean);
   const questionScopeLabel = params.questionScopeLabel?.trim();
+  const selection =
+    params.topicId !== undefined || params.subtopicId !== undefined || params.scope !== undefined
+      ? requirePromptSelection({
+          methodId: 'bazi-ziwei',
+          topicId: params.topicId,
+          subtopicId: params.subtopicId,
+          scope: params.scope,
+        })
+      : undefined;
+  const baseTaskText = isCustomQuestion
+    ? buildCustomQuestionTask('八字和紫微盘面资料', resolveBaziZiweiTaskMethod(params))
+    : buildPromptTask(resolveBaziZiweiTaskText(params), resolveBaziZiweiTaskMethod(params));
 
   return [
     buildPromptGuidanceSections('bazi-ziwei'),
@@ -226,16 +322,10 @@ export function buildBaziZiweiEnhancedPrompt(params: {
     questionScopeLabel && questionScopeLabel !== '通用'
       ? `【问题范围】\n${questionScopeLabel}`
       : '',
+    selection ? `【解读选择】\n${getPromptSelectionSection(selection)}` : '',
     `【八字排盘信息】\n${baziText}`,
     `【紫微盘面信息】\n${params.ziweiText}`,
-    `【任务】\n${
-      isCustomQuestion
-        ? buildCustomQuestionTask('八字和紫微盘面资料', 'bazi-ziwei')
-        : buildPromptTask(
-            '先用八字判断命局主线、结构强弱、喜忌取用与当前触发，再用紫微校验对应宫位主轴、四化牵动、三方四正和运限落点。',
-            'bazi-ziwei',
-          )
-    }`,
+    `【任务】\n${selection ? buildPromptSelectionTask(baseTaskText, selection) : baseTaskText}`,
     ...(normalizedQuestion ? [`【问题】\n${normalizedQuestion}`] : []),
   ]
     .filter(Boolean)

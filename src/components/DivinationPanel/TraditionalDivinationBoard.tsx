@@ -18,7 +18,9 @@ import {
   type HuangjiPeriodHexagram,
 } from 'mingyu-core/huangji-jingshi';
 import { TAIYI_PALACES } from 'mingyu-core/taiyi';
-import { analyzeAlmanacEvidence } from 'mingyu-core/divination/almanac';
+import type { KongmingHexagramResult, ZhugeNumberResult } from 'mingyu-core/name-number';
+import { getKongmingInterpretation, getZhugeInterpretation } from 'mingyu-core/name-number';
+import { analyzeAlmanacEvidence, formatAlmanacGods } from 'mingyu-core/divination/almanac';
 import {
   getAllLiuyaoCategoryChapters,
   getHuangjiCycleClassic,
@@ -375,6 +377,11 @@ function LiuyaoDualHexagramView({ data }: { data: LiuyaoData }) {
           const hidden = data.hiddenSpirits?.find((h) => h.position === yao.position);
           const isGuaShen = data.guaShen?.position === yao.position;
           const changedIsYang = yao.changedYao ? yao.yaoType === '阴' : yao.yaoType === '阳';
+          const graveNotes = [
+            yao.isRiMu ? '入日墓' : '',
+            yao.isDongMu ? '入动墓' : '',
+            yao.isHuaMu ? '动而化墓' : '',
+          ].filter(Boolean);
 
           const handleYaoTerm = (t: string) => {
             const ctx = getLiuyaoTermContext(
@@ -481,7 +488,7 @@ function LiuyaoDualHexagramView({ data }: { data: LiuyaoData }) {
               </div>
 
               {/* 3. 附注子行（伏神 / 卦身） */}
-              {hidden || isGuaShen ? (
+              {hidden || isGuaShen || graveNotes.length ? (
                 <div className="liuyao-subrow-notes">
                   {hidden ? (
                     <span
@@ -501,6 +508,9 @@ function LiuyaoDualHexagramView({ data }: { data: LiuyaoData }) {
                     >
                       卦身为{data.guaShen?.branch}
                     </span>
+                  ) : null}
+                  {graveNotes.length ? (
+                    <span className="liuyao-guashen-note">{graveNotes.join(' · ')}</span>
                   ) : null}
                 </div>
               ) : null}
@@ -717,18 +727,6 @@ function LiuyaoTraditionalBoard({
             });
           }
         }
-        if (yao.isRuMu) {
-          const rule = getLiuyaoMovementRule('change_grave');
-          if (rule && !rules.some((r) => r.key === rule.key)) {
-            rules.push({
-              key: rule.key,
-              trigger: rule.trigger,
-              source: rule.sourceBook,
-              verse: rule.originalVerse,
-              advice: rule.generalMeaning,
-            });
-          }
-        }
         if (yao.changeRelation === '化空' || yao.changeRelations?.includes('化空')) {
           const rule = getLiuyaoMovementRule('change_void');
           if (rule && !rules.some((r) => r.key === rule.key)) {
@@ -740,6 +738,18 @@ function LiuyaoTraditionalBoard({
               advice: rule.generalMeaning,
             });
           }
+        }
+      }
+      if (yao.isRuMu) {
+        const rule = getLiuyaoMovementRule('change_grave');
+        if (rule && !rules.some((r) => r.key === rule.key)) {
+          rules.push({
+            key: rule.key,
+            trigger: rule.trigger,
+            source: rule.sourceBook,
+            verse: rule.originalVerse,
+            advice: rule.generalMeaning,
+          });
         }
       }
     });
@@ -788,6 +798,29 @@ function LiuyaoTraditionalBoard({
 
       {/* 2. 双卦并列对齐爻卦区 */}
       <LiuyaoDualHexagramView data={data} />
+
+      {data.generation?.method === 'yarrow' && data.generation.yarrow ? (
+        <details className="traditional-classic-card">
+          <summary>蓍草起卦 · 十八变记录</summary>
+          <div className="traditional-classic-body">
+            <p>分堆方式：{data.generation.yarrow.samplingModel}</p>
+            {data.generation.yarrow.lines.map((line, index) => (
+              <div key={index}>
+                <strong>
+                  {formatYaoPosition(index + 1)} · 爻值{line.value}
+                </strong>
+                {line.changes.map((step, changeIndex) => (
+                  <p key={changeIndex}>
+                    第{changeIndex + 1}变：{step.initial}策，左{step.left}、右{step.right}，
+                    挂一，左余{step.leftRemainder}、右余{step.rightRemainder}， 去{step.removed}
+                    策，剩{step.remaining}策。
+                  </p>
+                ))}
+              </div>
+            ))}
+          </div>
+        </details>
+      ) : null}
 
       {/* 3. 持世与卦象特性速查 */}
       {hexagramTips.length ? (
@@ -1046,10 +1079,11 @@ function MeihuaTraditionalBoard({
       </div>
       {meihuaJudgement ? (
         <ClassicalAnnotationCard
-          title={`${meihuaJudgement.relationType} · 定局断语（${meihuaJudgement.auspice}）`}
+          title={`${meihuaJudgement.relationType} · 基础释义（未计季节旺衰与互变卦）`}
           source="梅花易数·体用总断"
           verse={meihuaJudgement.classicSummary}
-          modernAdvice={`【决策要领】${meihuaJudgement.actionAdvice}\n【求财】${meihuaJudgement.matterCategories.seekingWealth} | 【求事】${meihuaJudgement.matterCategories.wishing} | 【婚姻】${meihuaJudgement.matterCategories.marriage}`}
+          modernAdvice={`【条目固定取象，未结合本盘季节旺衰、互卦与变卦，不能视为本局定断】
+【决策要领】${meihuaJudgement.actionAdvice}\n【求财】${meihuaJudgement.matterCategories.seekingWealth} | 【求事】${meihuaJudgement.matterCategories.wishing} | 【婚姻】${meihuaJudgement.matterCategories.marriage}`}
         />
       ) : null}
       {tiTrigramClassic ? (
@@ -1120,7 +1154,7 @@ function XiaoliurenTraditionalBoard({
               `农历${data.isLeapMonth ? '闰' : ''}${data.lunarMonth}月${data.lunarDay}日`,
           ],
           ['干支', `${data.ganzhi.month}月 ${data.ganzhi.day}日 ${data.ganzhi.hour}时`],
-          ['起课法', data.methodLabel || '小六壬时宫速断'],
+          ['起课法', data.ruleLabel || '通行掌诀'],
         ]}
       />
       <TraditionalFacts
@@ -1151,12 +1185,18 @@ function XiaoliurenTraditionalBoard({
         </div>
       </div>
 
-      {hourPalaceClassic ? (
+      {data.rule === 'duoneng' ? (
         <ClassicalAnnotationCard
-          title={`${hourPalaceClassic.name}（${hourPalaceClassic.auspice} · 属${hourPalaceClassic.wuxing}）· 诗诀决断`}
+          title={`${data.primary.name} · 课时断语`}
+          source="《多能鄙事》卷八"
+          verse={data.primary.verse}
+        />
+      ) : hourPalaceClassic ? (
+        <ClassicalAnnotationCard
+          title={`${hourPalaceClassic.name}（属${hourPalaceClassic.wuxing}）· 六宫歌诀`}
           source={hourPalaceClassic.sourceBook}
           verse={hourPalaceClassic.poem}
-          modernAdvice={`【决断指导】${hourPalaceClassic.modernAdvice}\n【方位类象】${hourPalaceClassic.direction} | 【对应身部】${hourPalaceClassic.bodyPart}`}
+          modernAdvice={hourPalaceClassic.modernAdvice}
         />
       ) : null}
     </TraditionalBoardShell>
@@ -2761,6 +2801,12 @@ function AlmanacTraditionalBoard({
               </section>
             </div>
 
+            {formatAlmanacGods(selectedDay).map((text) => (
+              <p className="traditional-almanac-gods" key={text}>
+                {text}
+              </p>
+            ))}
+
             <div className="traditional-almanac-evidence-grid">
               <section>
                 <h5>择日依据</h5>
@@ -3204,19 +3250,19 @@ function HuangjiTraditionalBoard({
 
       {annualCycleClassic ? (
         <ClassicalAnnotationCard
-          title={`${annualCycleClassic.name} · 邵雍《皇极经世》要义`}
+          title={annualCycleClassic.name}
           source={annualCycleClassic.sourceBook}
           verse={annualCycleClassic.verse}
-          modernAdvice={`【经世原理】${annualCycleClassic.principle}\n【指引】${annualCycleClassic.modernAdvice}`}
+          modernAdvice={`${annualCycleClassic.principle}\n${annualCycleClassic.modernAdvice}`}
         />
       ) : null}
 
       {shiCycleClassic ? (
         <ClassicalAnnotationCard
-          title={`${shiCycleClassic.name} · 三十年世卦要义`}
+          title={shiCycleClassic.name}
           source={shiCycleClassic.sourceBook}
           verse={shiCycleClassic.verse}
-          modernAdvice={`【经世原理】${shiCycleClassic.principle}\n【指引】${shiCycleClassic.modernAdvice}`}
+          modernAdvice={`${shiCycleClassic.principle}\n${shiCycleClassic.modernAdvice}`}
         />
       ) : null}
     </TraditionalBoardShell>
@@ -3462,6 +3508,83 @@ export function LiurenTraditionalBoard({
   );
 }
 
+function ZhugeTraditionalBoard({ data }: { data: ZhugeNumberResult }) {
+  const interpretation = data.interpretation ?? getZhugeInterpretation(data.number);
+  return (
+    <TraditionalBoardShell
+      title="诸葛神数"
+      subtitle={`三字取数 · 第${data.number}签`}
+      className="traditional-symbol-board"
+    >
+      <TraditionalMeta
+        items={[
+          ['所写三字', data.text],
+          ['康熙笔画', data.strokes.join('、')],
+          ['取数', data.digits.join('')],
+        ]}
+      />
+      <div className="traditional-poem-card">
+        <strong>第{data.number}签</strong>
+        <p>{data.sign.poem}</p>
+        {!interpretation && <small>{data.sign.summary}</small>}
+      </div>
+      {interpretation && (
+        <section className="traditional-sign-interpretation">
+          <h3>诗意与解签</h3>
+          <blockquote>{interpretation.quote}</blockquote>
+          <p>{interpretation.imageMeaning}</p>
+          <p>{interpretation.interpretation}</p>
+          <p>{interpretation.condition}</p>
+          {interpretation.classicalImage && <p>{interpretation.classicalImage}</p>}
+        </section>
+      )}
+    </TraditionalBoardShell>
+  );
+}
+
+function KongmingTraditionalBoard({ data }: { data: KongmingHexagramResult }) {
+  const interpretation = data.interpretation ?? getKongmingInterpretation(data.symbol);
+  return (
+    <TraditionalBoardShell
+      title="孔明神卦"
+      subtitle={`第${data.number}卦 · ${data.grade}`}
+      className="traditional-symbol-board"
+    >
+      <div
+        className="traditional-symbol-sequence"
+        aria-label="从左到右依次为第一至第五枚硬币的阴阳结果"
+      >
+        {[...data.symbol].map((symbol, index) => (
+          <span
+            key={index}
+            aria-label={`第${index + 1}枚，${symbol === '●' ? '正面，阳' : '反面，阴'}`}
+          >
+            <strong>{symbol}</strong>
+            <small>第{index + 1}枚</small>
+          </span>
+        ))}
+      </div>
+      <div className="traditional-poem-card">
+        <strong>{data.name}</strong>
+        <p>{data.poem}</p>
+      </div>
+      <section className="traditional-sign-interpretation">
+        <h3>诗意与解卦</h3>
+        <blockquote>{interpretation.quote}</blockquote>
+        <p>{interpretation.imageMeaning}</p>
+        <p>{interpretation.interpretation}</p>
+        <p>{interpretation.condition}</p>
+        {interpretation.classicalImage ? (
+          <p>
+            {interpretation.classicalImage.title}“{interpretation.classicalImage.quote}”。
+            {interpretation.classicalImage.meaning}
+          </p>
+        ) : null}
+      </section>
+    </TraditionalBoardShell>
+  );
+}
+
 const DIVINATION_METHOD_LABELS: Record<string, string> = {
   liuyao: '六爻纳甲',
   meihua: '梅花易数',
@@ -3476,6 +3599,8 @@ const DIVINATION_METHOD_LABELS: Record<string, string> = {
   taiyi: '太乙神数',
   huangji: '皇极经世',
   liuren: '大六壬',
+  zhuge: '诸葛神数',
+  kongming: '孔明神卦',
 };
 
 function formatDivinationSessionShareText(session: DivinationSession): string {
@@ -3574,6 +3699,12 @@ export function TraditionalDivinationBoard({
       break;
     case 'ssgw':
       boardContent = <SsgwTraditionalBoard data={session.data as SsgwData} session={session} />;
+      break;
+    case 'zhuge':
+      boardContent = <ZhugeTraditionalBoard data={session.data as ZhugeNumberResult} />;
+      break;
+    case 'kongming':
+      boardContent = <KongmingTraditionalBoard data={session.data as KongmingHexagramResult} />;
       break;
     case 'almanac':
       boardContent = (

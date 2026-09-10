@@ -1,5 +1,11 @@
 import { memo } from 'react';
 import { AstrolabeChart } from '@/components/AstrolabeChart';
+import type {
+  AstrolabePeriodAxisItem,
+  AstrolabePeriodEvent,
+  AstrolabePeriodTransitGroup,
+  AstrolabePeriodWindow,
+} from '@/lib/astrolabe-scope';
 import type { AstrolabeData } from '@/types/divination';
 
 function findPlanet(data: AstrolabeData, name: string) {
@@ -16,8 +22,24 @@ export const AstrolabeBoard = memo(function AstrolabeBoard(props: {
   data: AstrolabeData;
   isInstant?: boolean;
   timeBasisLabel?: string;
+  periodEvents?: AstrolabePeriodEvent[];
+  periodRangeLabel?: string;
+  periodAxis?: AstrolabePeriodAxisItem[];
+  periodWindows?: AstrolabePeriodWindow[];
+  periodGroups?: AstrolabePeriodTransitGroup[];
 }) {
-  const { title, name, data, isInstant = false, timeBasisLabel } = props;
+  const {
+    title,
+    name,
+    data,
+    isInstant = false,
+    timeBasisLabel,
+    periodEvents = [],
+    periodRangeLabel,
+    periodAxis = [],
+    periodWindows = [],
+    periodGroups = [],
+  } = props;
   const highlightAspects = data.aspects.slice(0, 4);
   const retrogradeText =
     data.summary.retrograde.length > 0 ? data.summary.retrograde.join('、') : '无';
@@ -35,8 +57,21 @@ export const AstrolabeBoard = memo(function AstrolabeBoard(props: {
           ) : null}
           <span className="result-chip">{data.birth.dateTime}</span>
           <span className="result-chip">{data.birth.location}</span>
+          {data.houseSystem && (
+            <span className="result-chip">
+              {data.houseSystem === 'whole_sign' ? '整宫制' : 'Placidus'}
+            </span>
+          )}
         </div>
       </div>
+
+      {Boolean(data.ephemerisWarnings?.length) && (
+        <div className="result-side-card" role="note" aria-label="星历精度">
+          {data.ephemerisWarnings!.map((warning) => (
+            <p key={warning}>{warning}</p>
+          ))}
+        </div>
+      )}
 
       <div className="result-summary-grid">
         <div className="result-stat-card result-stat-card-accent">
@@ -146,6 +181,66 @@ export const AstrolabeBoard = memo(function AstrolabeBoard(props: {
               ) : null}
             </div>
           </div>
+
+          {periodEvents.length > 0 ? (
+            <div className="result-side-card">
+              <div className="result-side-head">
+                <h3>周期关键星象</h3>
+                <p>
+                  {periodRangeLabel
+                    ? `${periodRangeLabel}，共 ${periodEvents.length} 项。先看主轴和窗口，完整时刻在下方明细。`
+                    : `共 ${periodEvents.length} 项。先看主轴和窗口，完整时刻在下方明细。`}
+                </p>
+              </div>
+              {periodAxis.length > 0 ? (
+                <div className="astrolabe-period-axis">
+                  {periodAxis.map((item) => (
+                    <span className="result-soft-tag result-soft-tag-strong" key={item.key}>
+                      {item.promptText}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              {periodWindows.length > 0 ? (
+                <div className="astrolabe-period-window-list">
+                  {periodWindows.map((item) => (
+                    <div
+                      className="astrolabe-period-event-item"
+                      key={`${item.startDateTime}-${item.endDateTime}`}
+                    >
+                      <div>
+                        <strong>{item.promptText}</strong>
+                        <span>关键窗口</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              {periodGroups.length > 0 ? (
+                <div className="astrolabe-period-group-list">
+                  {periodGroups.map((item) => (
+                    <div className="astrolabe-period-event-item" key={item.key}>
+                      <div>
+                        <strong>{item.promptText}</strong>
+                        <span>过境归组</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              <div className="astrolabe-period-event-list">
+                {periodEvents.map((event) => (
+                  <div className="astrolabe-period-event-item" key={event.key}>
+                    <div>
+                      <strong>{event.promptText}</strong>
+                      <span>{event.dateTime}</span>
+                    </div>
+                    <em>{event.kind}</em>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
     </section>

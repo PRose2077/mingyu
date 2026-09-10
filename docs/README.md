@@ -12,11 +12,10 @@
 
 - [公开 API](api.md)：接口、参数和请求示例。
 - [MCP Server](../mcp/README.md)：让支持 MCP 的 AI 客户端调用命语。
-- [Agent Skill](../public/skills/aov-mingyu-api/SKILL.md)：让 AI 代理自动选择排盘和提示词接口。
+- [Agent Skill](../public/skills/aov-mingyu-api/SKILL.md)：通用算命与周易玄学工作流 Skill，让 AI 代理准确选择术数并调用排盘。
 - [`mingyu-core` 算法包](../packages/core/README.md)：在应用中复用核心算法。
 - [开发与部署](development-and-deployment.md)：本地开发、项目结构、Cloudflare Pages、Docker 和内置 AI 配置。
 - [模型评测](model-evaluation.md)：算命师大赛数据集和评测脚本。
-- [算法依据索引](2026-07-10-算法依据索引.md)：传统依据、校勘状态和回归证据。
 
 ## 在线发现入口
 
@@ -31,7 +30,7 @@
 推荐使用一条命令安装：
 
 ```bash
-npx skills add Brhiza/mingyu --skill aov-mingyu-api -g -y
+npx skills add Brhiza/mingyu --skill mingyu -g -y
 ```
 
 如果当前环境无法使用 `npx skills`，也可以手动保存在线 Skill。

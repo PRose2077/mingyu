@@ -15,6 +15,26 @@ import { MeihuaHelpers } from '../packages/core/src/divination/divination-helper
 
 const SAMPLE_DATE = new Date('2025-01-01T08:00:00+08:00');
 
+test('梅花随机轨迹重放应识别缺失、多余、篡改及拒绝采样', () => {
+  const samples = [0, 0.25, 0xffffffff / 0x100000000, 0.5];
+  const data = generateMeihua(SAMPLE_DATE, { method: 'random', replay: samples });
+  assert.equal(data.calculation?.upperTrigramIndex, 1);
+  assert.equal(data.calculation?.lowerTrigramIndex, 3);
+  assert.equal(data.movingYao.position, 4);
+  assert.equal(analyzeMeihuaEvidence(data).randomFact.sampleCount, 4);
+  const wrongHexagram = structuredClone(data);
+  wrongHexagram.mainHexagram.upper = '坤';
+  assert.throws(() => analyzeMeihuaEvidence(wrongHexagram), /随机轨迹与起卦计算记录不一致/);
+  for (const invalid of [samples.slice(0, -1), [...samples, 0], [0.75, ...samples.slice(1)]]) {
+    const changed = structuredClone(data);
+    changed.meta!.random!.samples = invalid;
+    assert.throws(
+      () => analyzeMeihuaEvidence(changed),
+      /随机重放样本已用尽|随机轨迹与起卦计算记录不一致/,
+    );
+  }
+});
+
 test('梅花：变卦应按初爻到上爻的传统爻位计算', () => {
   const data = generateMeihua(SAMPLE_DATE, { method: 'number', number: 123 });
 
@@ -275,4 +295,11 @@ test('梅花：五行关系 helper 应拒绝非法五行，不应返回未知', 
   assert.equal(MeihuaHelpers.getElementRelation('火', '木'), '体生用');
   assert.throws(() => MeihuaHelpers.getElementRelation('', '木'), /用卦五行无效/);
   assert.throws(() => MeihuaHelpers.getElementSeasonState('风', '春'), /目标五行无效/);
+});
+
+test('梅花：应推导主互变事态演变趋势（三阶段趋势机）', () => {
+  const result = generateMeihua(new Date('2025-06-18T10:30:00+08:00'));
+  assert.ok(result.analysis.timelineTrend);
+  assert.ok(result.analysis.timelineTrend.trend);
+  assert.ok(result.analysis.timelineTrend.summary);
 });

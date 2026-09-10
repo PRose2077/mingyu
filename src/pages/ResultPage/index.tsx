@@ -22,7 +22,11 @@ import {
   type QueryPromptState,
   type ResultTabKey,
 } from '@/lib/query-state';
-import { buildAstrolabeFullScopeContexts, buildAstrolabeScopeContext } from '@/lib/astrolabe-scope';
+import {
+  buildAstrolabeFullScopeContexts,
+  buildAstrolabeScopeContext,
+  mergeAstrolabePeriodCollections,
+} from '@/lib/astrolabe-scope';
 import { QuestionInspirationModal } from '@/components/QuestionInspirationModal';
 import { useViewportSize } from '@/hooks/useViewportWidth';
 import { getBaziDefaultQuestion } from '@/lib/prompt-default-questions';
@@ -61,6 +65,8 @@ import {
 } from './components/skeletons';
 import { AstrolabeBoard } from './components/AstrolabeBoard';
 import { QizhengBoard } from './components/QizhengBoard';
+import { QimenLifetimeBoard } from './components/QimenLifetimeBoard';
+import { calculateQimenLifetime, buildLifetimePrompt } from 'mingyu-core/divination/qimen';
 import { usePromptCopyShare } from '@/hooks/usePromptCopyShare';
 import { BaziChartBoard } from './components/BaziChartBoard';
 import { ZiweiBoard } from './components/ZiweiBoard';
@@ -104,9 +110,44 @@ import {
 } from '@/lib/instant-prompt';
 import { buildWorkspaceLaunchQuestion, readWorkspaceLaunchState } from '@/lib/workspace-launch';
 import { getConsultationHistoryById } from '@/lib/history-records';
+import {
+  buildPromptSelectionTask,
+  getPromptMethodCapability,
+  getPromptSubtopicOptions,
+  getPromptTopicOptions,
+  getPromptSelectionSection,
+  requirePromptSelection,
+} from 'mingyu-core/prompt';
 
 type FortuneScopePreset = 'default' | 'dayun' | 'year' | 'month' | 'day' | 'all' | 'manual';
 type FortuneScopePresetKind = 'bazi' | 'ziwei' | 'astrolabe';
+
+function toPromptScope(scope: string) {
+  return scope === 'origin' ? 'natal' : scope;
+}
+
+function applyZiweiPromptSelection(
+  prompt: string,
+  topicId: string,
+  subtopicId: string,
+  scope: string,
+) {
+  if (!topicId && !subtopicId) return prompt;
+  const selection = requirePromptSelection({
+    methodId: 'ziwei',
+    topicId,
+    subtopicId: subtopicId || undefined,
+    scope: toPromptScope(scope),
+  });
+  const taskMatch = /【任务】\n([\s\S]*?)(?=\n\n【问题】|$)/u.exec(prompt);
+  if (!taskMatch) {
+    return `${prompt}\n\n【解读选择】\n${getPromptSelectionSection(selection)}\n\n【任务】\n${buildPromptSelectionTask('请依据已列紫微盘面资料回答【问题】。', selection)}`;
+  }
+  const taskText = taskMatch[1]?.trim() ?? '';
+  const selectionSection = `【解读选择】\n${getPromptSelectionSection(selection)}`;
+  const replacement = `${selectionSection}\n\n【任务】\n${buildPromptSelectionTask(taskText, selection)}`;
+  return prompt.replace(taskMatch[0], replacement);
+}
 
 function FortuneScopePresetSelect(props: {
   value: FortuneScopePreset;
@@ -156,6 +197,101 @@ function FortuneScopePresetSelect(props: {
       prefix="范围"
       variant="field"
     />
+  );
+}
+
+function PromptThemeFields(props: {
+  source: 'bazi' | 'bazi-ziwei' | 'ziwei' | 'astrolabe';
+  promptState: QueryPromptState;
+  onChange: (next: Partial<QueryPromptState>) => void;
+}) {
+  const capability = getPromptMethodCapability(props.source);
+  const topicOptions = getPromptTopicOptions(props.source);
+  const currentTopic =
+    props.source === 'bazi'
+      ? props.promptState.baziTopicId
+      : props.source === 'ziwei'
+        ? props.promptState.ziweiTopicId
+        : props.source === 'astrolabe'
+          ? props.promptState.astrolabeTopicId
+          : props.promptState.baziTopicId || props.promptState.ziweiTopicId;
+  const currentSubtopic =
+    props.source === 'bazi'
+      ? props.promptState.baziSubtopicId
+      : props.source === 'ziwei'
+        ? props.promptState.ziweiSubtopicId
+        : props.source === 'astrolabe'
+          ? props.promptState.astrolabeSubtopicId
+          : props.promptState.baziSubtopicId || props.promptState.ziweiSubtopicId;
+  const topicId = topicOptions.some((item) => item.id === currentTopic) ? currentTopic : '';
+  const subtopicOptions = getPromptSubtopicOptions(topicId || 'general', props.source);
+  const subtopicId = subtopicOptions.some((item) => item.id === currentSubtopic)
+    ? currentSubtopic
+    : '';
+  const topicSelectOptions = [
+    { value: '', label: '随快捷主题' },
+    ...topicOptions.map((item) => ({ value: item.id, label: item.label })),
+  ];
+  const subtopicSelectOptions = subtopicOptions.map((item) => ({
+    value: item.id,
+    label: item.label,
+  }));
+
+  function updateTopic(value: string) {
+    if (props.source === 'bazi') {
+      props.onChange({ baziTopicId: value, baziSubtopicId: '' });
+    } else if (props.source === 'ziwei') {
+      props.onChange({ ziweiTopicId: value, ziweiSubtopicId: '' });
+    } else if (props.source === 'astrolabe') {
+      props.onChange({ astrolabeTopicId: value, astrolabeSubtopicId: '' });
+    } else {
+      props.onChange({
+        baziTopicId: value,
+        baziSubtopicId: '',
+        ziweiTopicId: value,
+        ziweiSubtopicId: '',
+      });
+    }
+  }
+
+  function updateSubtopic(value: string) {
+    if (props.source === 'bazi') {
+      props.onChange({ baziSubtopicId: value });
+    } else if (props.source === 'ziwei') {
+      props.onChange({ ziweiSubtopicId: value });
+    } else if (props.source === 'astrolabe') {
+      props.onChange({ astrolabeSubtopicId: value });
+    } else {
+      props.onChange({ baziSubtopicId: value, ziweiSubtopicId: value });
+    }
+  }
+
+  return (
+    <div className="workspace-prompt-selection-fields" title="主题会改变提示词的证据重点">
+      <span className="workspace-prompt-selection-method">
+        {capability?.categoryLabel ?? '命盘'} · {capability?.methodLabel ?? props.source}
+      </span>
+      <DropdownSelect
+        id="result-prompt-topic-select"
+        value={topicId}
+        options={topicSelectOptions}
+        onChange={updateTopic}
+        ariaLabel="解读主题"
+        prefix="主题"
+        variant="field"
+      />
+      {subtopicOptions.length > 0 ? (
+        <DropdownSelect
+          id="result-prompt-subtopic-select"
+          value={subtopicId}
+          options={[{ value: '', label: '不限定' }, ...subtopicSelectOptions]}
+          onChange={updateSubtopic}
+          ariaLabel="主题细项"
+          prefix="细项"
+          variant="field"
+        />
+      ) : null}
+    </div>
   );
 }
 
@@ -244,13 +380,15 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
     const chartTab: ResultTabKey =
       promptState.promptSource === 'ziwei'
         ? 'ziwei'
-        : promptState.promptSource === 'astrolabe'
-          ? 'astrolabe'
-          : promptState.promptSource === 'qizheng'
-            ? 'qizheng'
-            : promptState.promptSource === 'bazhai'
-              ? 'bazhai'
-              : 'bazi';
+        : promptState.promptSource === 'qimen-lifetime'
+          ? 'qimen-lifetime'
+          : promptState.promptSource === 'astrolabe'
+            ? 'astrolabe'
+            : promptState.promptSource === 'qizheng'
+              ? 'qizheng'
+              : promptState.promptSource === 'bazhai'
+                ? 'bazhai'
+                : 'bazi';
     return [chartTab, 'minglu', 'prompt'];
   }, [isCombinedResult, promptState.promptSource]);
   const chartTabs = useMemo(
@@ -285,6 +423,7 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
   const isAstrolabePromptSource = promptState.promptSource === 'astrolabe';
   const isQizhengPromptSource = promptState.promptSource === 'qizheng';
   const isBazhaiPromptSource = promptState.promptSource === 'bazhai';
+  const isQimenLifetimePromptSource = promptState.promptSource === 'qimen-lifetime';
   const hasAdjustablePromptScope =
     !isInstantResult &&
     (((promptState.promptSource === 'bazi' || promptState.promptSource === 'bazi-ziwei') &&
@@ -325,6 +464,7 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
   const [mountedTabs, setMountedTabs] = useState<Record<ResultTabKey, boolean>>(() => ({
     bazi: promptState.tab === 'bazi',
     ziwei: promptState.tab === 'ziwei',
+    'qimen-lifetime': promptState.tab === 'qimen-lifetime',
     astrolabe: promptState.tab === 'astrolabe',
     qizheng: promptState.tab === 'qizheng',
     bazhai: canUseResidentialFengshui && promptState.tab === 'bazhai',
@@ -357,6 +497,9 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
       longitude: inputState.birthLongitude ? Number(inputState.birthLongitude) : undefined,
       timeZoneId: FRONTEND_DEFAULT_TIME_ZONE_ID,
       useTrueSolarTime: inputState.useTrueSolarTime,
+      ...(inputState.gender === 'male' || inputState.gender === 'female'
+        ? { gender: inputState.gender }
+        : {}),
     };
   }, [baziResult, hasPreciseBirthData, inputState]);
   const residentialBirthData = useMemo(() => {
@@ -922,6 +1065,85 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
       };
     }
   }, [sharedBirthData, shouldCalculateQizheng]);
+
+  const shouldCalculateQimenLifetime =
+    inputState.analysisMode === 'single' &&
+    (mountedTabs['qimen-lifetime'] || (mountedTabs.prompt && isQimenLifetimePromptSource));
+
+  const qimenLifetimeCalculation = useMemo<{
+    data: import('@/types/divination').QimenLifetimeData | null;
+    error: string;
+  }>(() => {
+    if (!shouldCalculateQimenLifetime) return { data: null, error: '' };
+    const year = Number(inputState.year);
+    const month = Number(inputState.month);
+    const day = Number(inputState.day);
+    if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+      return { data: null, error: '请填写完整出生年月日' };
+    }
+
+    let hour = 12;
+    let minute = 0;
+    if (inputState.useTrueSolarTime && inputState.birthHour !== '') {
+      hour = Number(inputState.birthHour);
+      minute = inputState.birthMinute === '' ? 0 : Number(inputState.birthMinute);
+    } else if (inputState.timeIndex !== '' && Number(inputState.timeIndex) >= 0) {
+      const opt = BIRTH_TIME_OPTIONS[Number(inputState.timeIndex)];
+      if (opt) {
+        hour = opt.hour;
+        minute = opt.minute;
+      }
+    }
+
+    const birthDateTime = `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00`;
+    const currentYear = new Date().getFullYear();
+    const periodRange = {
+      startDate: `${currentYear - 1}-01-01`,
+      endDate: `${currentYear + 2}-12-31`,
+    };
+
+    try {
+      const data = calculateQimenLifetime({
+        birthDateTime,
+        calendarType: inputState.dateType === 'lunar' ? 'lunar' : 'solar',
+        isLeapMonth: inputState.isLeapMonth,
+        timeStandard: inputState.useTrueSolarTime ? 'trueSolar' : 'civil',
+        location:
+          inputState.useTrueSolarTime && inputState.birthLongitude
+            ? {
+                longitude: Number(inputState.birthLongitude),
+                latitude: inputState.birthLatitude ? Number(inputState.birthLatitude) : undefined,
+                locationName: inputState.birthPlace,
+              }
+            : undefined,
+        gender: inputState.gender,
+        name: inputState.name,
+        periodRange,
+      });
+      return { data, error: '' };
+    } catch (err) {
+      return {
+        data: null,
+        error: err instanceof Error ? err.message : '奇门终身局排盘失败。',
+      };
+    }
+  }, [
+    inputState.birthHour,
+    inputState.birthLatitude,
+    inputState.birthLongitude,
+    inputState.birthMinute,
+    inputState.birthPlace,
+    inputState.dateType,
+    inputState.day,
+    inputState.gender,
+    inputState.isLeapMonth,
+    inputState.month,
+    inputState.name,
+    inputState.timeIndex,
+    inputState.useTrueSolarTime,
+    inputState.year,
+    shouldCalculateQimenLifetime,
+  ]);
   const astrolabeScopeContext = useMemo(
     () =>
       buildAstrolabeScopeContext(
@@ -931,15 +1153,39 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
       ),
     [astrolabeCalculation.data, promptState.astrolabeScope, promptState.astrolabeScopeDate],
   );
-  const astrolabeFullScopeContext = useMemo(() => {
+  const astrolabeFullScopeContexts = useMemo(() => {
     if (!astrolabeCalculation.data || promptState.astrolabeScope !== 'full') {
       return null;
     }
 
-    return buildAstrolabeFullScopePromptText(
-      buildAstrolabeFullScopeContexts(astrolabeCalculation.data, promptState.astrolabeScopeDate),
+    return buildAstrolabeFullScopeContexts(
+      astrolabeCalculation.data,
+      promptState.astrolabeScopeDate,
     );
   }, [astrolabeCalculation.data, promptState.astrolabeScope, promptState.astrolabeScopeDate]);
+  const astrolabeFullScopeContext = useMemo(
+    () =>
+      astrolabeFullScopeContexts
+        ? buildAstrolabeFullScopePromptText(astrolabeFullScopeContexts)
+        : null,
+    [astrolabeFullScopeContexts],
+  );
+  const astrolabePeriodCollection = useMemo(() => {
+    if (astrolabeFullScopeContexts) {
+      return mergeAstrolabePeriodCollections(
+        [
+          astrolabeFullScopeContexts.yearly.periodEvents,
+          astrolabeFullScopeContexts.monthly.periodEvents,
+          astrolabeFullScopeContexts.daily.periodEvents,
+        ].filter((item): item is NonNullable<typeof item> => Boolean(item)),
+      );
+    }
+    return astrolabeScopeContext.periodEvents;
+  }, [astrolabeFullScopeContexts, astrolabeScopeContext.periodEvents]);
+  const astrolabePeriodEvents = astrolabePeriodCollection?.events ?? [];
+  const astrolabePeriodRangeLabel = astrolabePeriodCollection
+    ? `${astrolabePeriodCollection.startDateTime}至${astrolabePeriodCollection.endDateTime}`
+    : undefined;
 
   const activeBaziQuestionScopeLabel = useMemo(() => {
     if (activeBaziShortcutMode === '自定义' || activeBaziShortcutMode === '问题灵感') {
@@ -978,6 +1224,22 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
       {
         isCustomQuestion: activeBaziShortcutMode === '自定义',
         fortuneScope: promptState.baziFortuneScope,
+        ...(promptState.baziTopicId
+          ? {
+              topicId: promptState.baziTopicId,
+              subtopicId: promptState.baziSubtopicId || undefined,
+              scope:
+                promptState.baziFortuneScope === 'dayun'
+                  ? 'decadal'
+                  : promptState.baziFortuneScope === 'year'
+                    ? 'yearly'
+                    : promptState.baziFortuneScope === 'month'
+                      ? 'monthly'
+                      : promptState.baziFortuneScope === 'day'
+                        ? 'daily'
+                        : promptState.baziFortuneScope,
+            }
+          : {}),
       },
     );
     return buildCombinedPromptText(system, user);
@@ -1001,7 +1263,7 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
       if (!currentZiweiPayload || !partnerZiweiPayload || !ziweiRuntime || !partnerZiweiRuntime) {
         return '';
       }
-      return buildCombinedZiweiCompatibilityPrompt({
+      const compatibilityPrompt = buildCombinedZiweiCompatibilityPrompt({
         primaryPayload: currentZiweiPayload,
         partnerPayload: partnerZiweiPayload,
         primaryAstrolabe: ziweiRuntime.astrolabe,
@@ -1012,6 +1274,12 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
         question,
         isCustomQuestion: activeZiweiShortcutMode === '自定义',
       });
+      return applyZiweiPromptSelection(
+        compatibilityPrompt,
+        promptState.ziweiTopicId,
+        promptState.ziweiSubtopicId,
+        toPromptScope(promptState.ziweiScope),
+      );
     }
     if (!currentZiweiPayload) return '';
     const basePrompt = buildCombinedZiweiPrompt(
@@ -1023,14 +1291,21 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
         trueSolarEvidence: ziweiRuntime?.trueSolarEvidence,
       },
     );
-    if (promptState.ziweiScope !== 'full' || !activeZiweiPayloadByScope) {
-      return basePrompt;
-    }
-
-    const fullScopeText = formatZiweiFullScopeText(activeZiweiPayloadByScope);
-    return fullScopeText
-      ? basePrompt.replace('【问题】', `【完整运限资料】\n${fullScopeText}\n\n【问题】`)
-      : basePrompt;
+    const scopedPrompt =
+      promptState.ziweiScope === 'full' && activeZiweiPayloadByScope
+        ? (() => {
+            const fullScopeText = formatZiweiFullScopeText(activeZiweiPayloadByScope);
+            return fullScopeText
+              ? basePrompt.replace('【问题】', `【完整运限资料】\n${fullScopeText}\n\n【问题】`)
+              : basePrompt;
+          })()
+        : basePrompt;
+    return applyZiweiPromptSelection(
+      scopedPrompt,
+      promptState.ziweiTopicId,
+      promptState.ziweiSubtopicId,
+      toPromptScope(promptState.ziweiScope),
+    );
   }
 
   const ziweiScopeSummaryText =
@@ -1126,6 +1401,24 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
       ziweiScopeSummary:
         promptState.ziweiScope === 'origin' ? '' : `紫微分析范围：${ziweiScopeSummaryText}`,
       isCustomQuestion: activeBaziShortcutMode === '自定义',
+      ...(promptState.baziTopicId || promptState.ziweiTopicId
+        ? {
+            topicId: promptState.baziTopicId || promptState.ziweiTopicId,
+            subtopicId: promptState.baziSubtopicId || promptState.ziweiSubtopicId || undefined,
+            scope:
+              promptState.baziFortuneScope === 'dayun'
+                ? 'decadal'
+                : promptState.baziFortuneScope === 'year'
+                  ? 'yearly'
+                  : promptState.baziFortuneScope === 'month'
+                    ? 'monthly'
+                    : promptState.baziFortuneScope === 'day'
+                      ? 'daily'
+                      : promptState.baziFortuneScope === 'full'
+                        ? 'full'
+                        : toPromptScope(promptState.ziweiScope),
+          }
+        : {}),
     });
   }
 
@@ -1163,6 +1456,8 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
       partnerBaziResult,
       promptEngine,
       promptState.baziPresetId,
+      promptState.baziTopicId,
+      promptState.baziSubtopicId,
       promptState.baziFortuneScope,
       promptState.promptSource,
       showAssistantPane,
@@ -1201,6 +1496,8 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
       partnerBaziResult,
       promptEngine,
       promptState.baziPresetId,
+      promptState.baziTopicId,
+      promptState.baziSubtopicId,
       promptState.baziFortuneScope,
       promptState.promptSource,
       showAssistantPane,
@@ -1226,6 +1523,8 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
       showAssistantPane,
       promptState.ziweiScope,
       promptState.ziweiTopic,
+      promptState.ziweiTopicId,
+      promptState.ziweiSubtopicId,
       ziweiRuntime,
     ],
   );
@@ -1256,6 +1555,8 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
       showAssistantPane,
       promptState.ziweiScope,
       promptState.ziweiTopic,
+      promptState.ziweiTopicId,
+      promptState.ziweiSubtopicId,
       ziweiRuntime,
     ],
   );
@@ -1286,6 +1587,13 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
         isCustomQuestion: activeAstrolabeShortcutMode === '自定义',
         astrolabeTopic: promptState.astrolabeTopic,
         astrolabeScopeText: astrolabeFullScopeContext ?? astrolabeScopeContext.promptText,
+        ...(promptState.astrolabeTopicId
+          ? {
+              topicId: promptState.astrolabeTopicId,
+              subtopicId: promptState.astrolabeSubtopicId || undefined,
+              scope: promptState.astrolabeScope,
+            }
+          : {}),
       },
     );
   }, [
@@ -1297,6 +1605,9 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
     instantTimeBasisLabel,
     isInstantResult,
     promptState.astrolabeTopic,
+    promptState.astrolabeTopicId,
+    promptState.astrolabeSubtopicId,
+    promptState.astrolabeScope,
     promptState.promptSource,
     showAssistantPane,
   ]);
@@ -1330,6 +1641,13 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
         isCustomQuestion: activeAstrolabeShortcutMode === '自定义',
         astrolabeTopic: promptState.astrolabeTopic,
         astrolabeScopeText: astrolabeFullScopeContext ?? astrolabeScopeContext.promptText,
+        ...(promptState.astrolabeTopicId
+          ? {
+              topicId: promptState.astrolabeTopicId,
+              subtopicId: promptState.astrolabeSubtopicId || undefined,
+              scope: promptState.astrolabeScope,
+            }
+          : {}),
       },
     );
   }, [
@@ -1343,6 +1661,9 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
     instantTimeBasisLabel,
     isInstantResult,
     promptState.astrolabeTopic,
+    promptState.astrolabeTopicId,
+    promptState.astrolabeSubtopicId,
+    promptState.astrolabeScope,
     promptState.promptSource,
     showAssistantPane,
   ]);
@@ -1387,6 +1708,24 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
     showAssistantPane,
     residentialMeasurement,
     residentialResult,
+  ]);
+  const qimenLifetimePromptText = useMemo(() => {
+    if (
+      !showAssistantPane ||
+      promptState.promptSource !== 'qimen-lifetime' ||
+      !qimenLifetimeCalculation.data
+    ) {
+      return '';
+    }
+    return buildLifetimePrompt(
+      qimenLifetimeCalculation.data,
+      metaphysicsQuestionDraft.trim() || undefined,
+    );
+  }, [
+    metaphysicsQuestionDraft,
+    promptState.promptSource,
+    qimenLifetimeCalculation.data,
+    showAssistantPane,
   ]);
   const latestEnhancedPromptText = useMemo(
     () =>
@@ -1502,17 +1841,19 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
   ]);
 
   const basePreviewActivePromptText =
-    promptState.promptSource === 'qizheng'
-      ? qizhengPromptText
-      : promptState.promptSource === 'bazhai'
-        ? bazhaiPromptText
-        : promptState.promptSource === 'astrolabe'
-          ? previewAstrolabePromptText
-          : promptState.promptSource === 'bazi-ziwei'
-            ? previewEnhancedPromptText
-            : promptState.promptSource === 'bazi'
-              ? previewBaziPromptText
-              : previewZiweiPromptText;
+    promptState.promptSource === 'qimen-lifetime'
+      ? qimenLifetimePromptText
+      : promptState.promptSource === 'qizheng'
+        ? qizhengPromptText
+        : promptState.promptSource === 'bazhai'
+          ? bazhaiPromptText
+          : promptState.promptSource === 'astrolabe'
+            ? previewAstrolabePromptText
+            : promptState.promptSource === 'bazi-ziwei'
+              ? previewEnhancedPromptText
+              : promptState.promptSource === 'bazi'
+                ? previewBaziPromptText
+                : previewZiweiPromptText;
   const previewActivePromptText = basePreviewActivePromptText;
 
   const aiContextPrompt = useMemo(() => {
@@ -1524,17 +1865,19 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
   const [inspirationText, setInspirationText] = useState('');
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const baseLatestActivePromptText =
-    promptState.promptSource === 'qizheng'
-      ? qizhengPromptText
-      : promptState.promptSource === 'bazhai'
-        ? bazhaiPromptText
-        : promptState.promptSource === 'astrolabe'
-          ? latestAstrolabePromptText
-          : promptState.promptSource === 'bazi-ziwei'
-            ? latestEnhancedPromptText
-            : promptState.promptSource === 'bazi'
-              ? latestBaziPromptText
-              : latestZiweiPromptText;
+    promptState.promptSource === 'qimen-lifetime'
+      ? qimenLifetimePromptText
+      : promptState.promptSource === 'qizheng'
+        ? qizhengPromptText
+        : promptState.promptSource === 'bazhai'
+          ? bazhaiPromptText
+          : promptState.promptSource === 'astrolabe'
+            ? latestAstrolabePromptText
+            : promptState.promptSource === 'bazi-ziwei'
+              ? latestEnhancedPromptText
+              : promptState.promptSource === 'bazi'
+                ? latestBaziPromptText
+                : latestZiweiPromptText;
   const latestActivePromptText = baseLatestActivePromptText;
   const { copyState, shareState, handleCopy } = usePromptCopyShare(latestActivePromptText);
 
@@ -1613,9 +1956,11 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
     ? '例如：卧室、书房和大门分别怎样安排更合适？'
     : isQizhengPromptSource
       ? '例如：请重点分析事业方向、关系模式和近期应注意的风险。'
-      : inputState.analysisMode === 'compatibility'
-        ? '输入这段关系或合作最想了解的问题'
-        : '输入你真正想问的问题';
+      : isQimenLifetimePromptSource
+        ? '例如：请重点分析一生事业发展格局、财运起伏与关键转折阶段。'
+        : inputState.analysisMode === 'compatibility'
+          ? '输入这段关系或合作最想了解的问题'
+          : '输入你真正想问的问题';
   const natalPromptSections = useMemo(() => {
     const keyword = inspiration.deferredSearch.trim().toLocaleLowerCase();
     const actionMap = new Map(promptShortcutActions.map((item) => [item.label, item]));
@@ -1781,15 +2126,17 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
                   ? '八字'
                   : tab === 'ziwei'
                     ? '紫微'
-                    : tab === 'astrolabe'
-                      ? '星盘'
-                      : tab === 'qizheng'
-                        ? '七政'
-                        : tab === 'bazhai'
-                          ? '八宅'
-                          : tab === 'minglu'
-                            ? '命录'
-                            : '排盘';
+                    : tab === 'qimen-lifetime'
+                      ? '奇门'
+                      : tab === 'astrolabe'
+                        ? '星盘'
+                        : tab === 'qizheng'
+                          ? '七政'
+                          : tab === 'bazhai'
+                            ? '八宅'
+                            : tab === 'minglu'
+                              ? '命录'
+                              : '排盘';
               return (
                 <button
                   type="button"
@@ -1869,6 +2216,27 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
                 data={qizhengCalculation.data}
                 isInstant={isInstantResult}
                 timeBasisLabel={instantTimeBasisLabel}
+              />
+            ) : (
+              <InlineSkeleton />
+            )
+          ) : null}
+        </div>
+
+        <div
+          className={`result-tab-pane workspace-result-chart-pane ${
+            !isAssistantPage && activeChartTab === 'qimen-lifetime' ? 'is-active' : 'is-inactive'
+          }`}
+          aria-hidden={isAssistantPage || activeChartTab !== 'qimen-lifetime'}
+        >
+          {mountedTabs['qimen-lifetime'] ? (
+            qimenLifetimeCalculation.error ? (
+              <p className="error-text">{qimenLifetimeCalculation.error}</p>
+            ) : qimenLifetimeCalculation.data ? (
+              <QimenLifetimeBoard
+                title={isInstantResult ? '奇门终身即时盘' : '奇门终身局'}
+                name={isInstantResult ? '当前时刻' : inputState.name || '本人'}
+                data={qimenLifetimeCalculation.data}
               />
             ) : (
               <InlineSkeleton />
@@ -1958,6 +2326,11 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
                     data={astrolabeCalculation.data}
                     isInstant={isInstantResult}
                     timeBasisLabel={instantTimeBasisLabel}
+                    periodEvents={astrolabePeriodEvents}
+                    periodRangeLabel={astrolabePeriodRangeLabel}
+                    periodAxis={astrolabePeriodCollection?.axis}
+                    periodWindows={astrolabePeriodCollection?.windows}
+                    periodGroups={astrolabePeriodCollection?.groups}
                   />
                 ) : null}
               </section>
@@ -2044,6 +2417,16 @@ export function ResultPage({ assistantOnly = false }: ResultPageProps) {
                       <span>选择问题</span>
                       <small>{activePromptShortcutMode}</small>
                     </WorkspaceButton>
+                    {promptState.promptSource === 'bazi' ||
+                    promptState.promptSource === 'bazi-ziwei' ||
+                    promptState.promptSource === 'ziwei' ||
+                    promptState.promptSource === 'astrolabe' ? (
+                      <PromptThemeFields
+                        source={promptState.promptSource}
+                        promptState={promptState}
+                        onChange={updatePromptState}
+                      />
+                    ) : null}
                     {promptScopeField}
                   </div>
 

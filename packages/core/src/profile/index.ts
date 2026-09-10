@@ -514,6 +514,7 @@ export function birthProfileToZiweiChartInput(profile: BirthProfile): ChartInput
       ? formatBirthDate(date.year, date.month, date.day)
       : formatBirthDate(profile.year, profile.month, profile.day),
     birthTimeIndex: normalized.timeIndex,
+    ...(date ? { birthTime: { hour: date.hour, minute: date.minute } } : {}),
     trueSolarEvidence: normalized.trueSolarEvidence,
     isLeapMonth: useTrueSolarTime ? false : profile.isLeapMonth,
     fixLeap: true,
@@ -571,6 +572,8 @@ export function birthProfileToAstrolabeInput(profile: BirthProfile): AstrolabeBi
     longitude: String(location.longitude),
     ...(location.timezone !== undefined ? { timezone: String(location.timezone) } : {}),
     ...(location.timeZoneId ? { timeZoneId: location.timeZoneId } : {}),
+    // 保留坐标精度登记，使星盘结果可区分用户精确坐标与行政区/省级近似值
+    ...(location.coordinateAccuracy ? { coordinateAccuracy: location.coordinateAccuracy } : {}),
     locationName: location.name,
     useTrueSolarTime: profile.useTrueSolarTime,
   };
@@ -599,6 +602,7 @@ export function birthProfileToQizhengInput(profile: BirthProfile): QizhengInput 
     ...(location?.timezone !== undefined ? { timezone: location.timezone } : {}),
     ...(location?.timeZoneId ? { timeZoneId: location.timeZoneId } : {}),
     useTrueSolarTime: profile.useTrueSolarTime === true,
+    ...(profile.gender === 'male' || profile.gender === 'female' ? { gender: profile.gender } : {}),
   };
 }
 

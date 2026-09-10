@@ -15,6 +15,7 @@ import {
   calculateSolarTermEvidence,
   convertTrueSolarTime,
   getTimeIndexFromClock,
+  resolveCivilTime,
   resolveTrueSolarBirthTime,
 } from 'mingyu-core/calendar';
 import { buildZiweiChartInput, calculatePublicZiweiChartForScopes } from 'mingyu-core/ziwei';
@@ -30,11 +31,17 @@ import {
   isValidIsoDateTime,
 } from '../date-validation';
 import { generateLiuyao, type LiuyaoGenerationOptions } from 'mingyu-core/divination/liuyao';
+import { MingyuCoreError } from 'mingyu-core/result';
 import { generateMeihua } from 'mingyu-core/divination/meihua';
 import { generateXiaoliuren } from 'mingyu-core/divination/xiaoliuren';
 import { generateJinkoujue } from 'mingyu-core/divination/jinkoujue';
-import { generateQimen } from 'mingyu-core/divination/qimen';
+import {
+  generateQimen,
+  calculateQimenLifetime,
+  generateQimenLifetimePrompt,
+} from 'mingyu-core/divination/qimen';
 import { generateLiuren } from 'mingyu-core/divination/liuren';
+import type { QimenLifetimeInput, QimenLifetimeData } from 'mingyu-core/types';
 import { analyzeAlmanacEvidence, generateAlmanacSelection } from 'mingyu-core/divination/almanac';
 import { drawLenormandSpread } from 'mingyu-core/divination/lenormand';
 import { generateAstrolabe } from 'mingyu-core/divination/astrolabe';
@@ -51,6 +58,21 @@ import {
   residentialFengshui,
 } from 'mingyu-core';
 import { isValidGanZhi } from 'mingyu-core/ganzhi';
+import {
+  analyzeChineseCharactersWithReferences,
+  selectChineseCharacters,
+  selectNamingCharacters,
+  analyzeChineseName,
+  generateChineseNames,
+  analyzeNumber,
+  calculateZhugeNumber,
+  castKongmingHexagram,
+  buildChineseNameAnalysisPrompt,
+  buildChineseNamingPrompt,
+  buildNumberEnergyPrompt,
+  type NamingBirthInput,
+  type Wuxing,
+} from 'mingyu-core/name-number';
 import { BAGUA, TWENTY_FOUR_MOUNTAINS } from 'mingyu-core/direction';
 import {
   analyzeCompassDirection,
@@ -90,7 +112,9 @@ import { drawTarotSpread } from 'mingyu-core/divination/tarot';
 import type { DivinationMethodId } from 'mingyu-core/divination/config';
 import {
   formatPromptSchoolGuidance,
+  buildPromptSelectionTask,
   getPromptSchoolIds,
+  getPromptSelectionSection,
   insertPromptSectionBeforeHeading,
   type PromptSchoolMethod,
 } from 'mingyu-core/prompt';
@@ -109,6 +133,11 @@ import {
   buildPublicZiweiPromptForRuntime,
   buildSerializableZiweiResult,
   getZiweiPromptCalculationScopes,
+  THEMATIC_TOPICS,
+  normalizeThematicTopic,
+  PROMPT_SCOPE_IDS,
+  resolvePromptSelection,
+  buildThematicConsultationPrompt,
   type BaziPromptTopic,
   type BaziSchool,
   type PromptMode,
@@ -265,8 +294,15 @@ const DIVINATION_REQUEST_PROPERTIES = {
     description: '从结果 meta.random.samples 保存的随机样本，用于完整重放。',
   },
   liuyaoMethod: {
-    enum: ['time', 'manual', 'coins'],
-    description: '六爻起卦方式：时间起卦、手工爻值或模拟三钱投掷。',
+    enum: ['time', 'manual', 'coins', 'yarrow'],
+    description: '六爻起卦方式：时间、手工爻值、模拟三钱或蓍草十八变。',
+  },
+  yarrowSplits: {
+    type: 'array',
+    minItems: 18,
+    maxItems: 18,
+    items: { type: 'integer', minimum: 1, maximum: 47 },
+    description: '蓍草十八变挂一前左堆策数，按初爻至上爻；不传则模拟分堆。',
   },
   yaos: {
     type: 'array',
@@ -289,6 +325,7 @@ const DIVINATION_REQUEST_PROPERTIES = {
   },
   method: { enum: ['time', 'number', 'random', 'timeTrigram'] },
   number: { type: 'integer', minimum: 1 },
+  xiaoliurenRule: { enum: ['common', 'duoneng'], description: '起课口径：通行掌诀或多能鄙事。' },
   xiaoliurenMethod: {
     enum: ['time'],
     description: '小六壬当前仅保留可核验的通行时间起课。',
@@ -328,6 +365,18 @@ const DIVINATION_REQUEST_PROPERTIES = {
   },
   liuyaoTemplate: { enum: ['general', 'ganqing', 'shiye', 'caifu', 'guaishen'] },
   liurenTemplate: { enum: ['general', 'ganqing', 'shiye', 'caifu'] },
+  topicId: {
+    type: 'string',
+    description: '统一解读主题 ID；与 subtopicId、scope 一起决定提示词任务范围。',
+  },
+  subtopicId: {
+    type: 'string',
+    description: '统一解读主题细项 ID；必须属于 topicId。',
+  },
+  scope: {
+    enum: [...PROMPT_SCOPE_IDS],
+    description: '统一解读资料范围；不传时按方法使用默认范围。',
+  },
   topic: {
     enum: [
       'marriage',
@@ -622,6 +671,88 @@ export function getPublicApiOpenApiDocument(
           },
         },
       },
+      '/name/generate': {
+        post: {
+          summary: '生成中文姓名候选并进行五格、三才与康熙笔画分析',
+          requestBody: openApiJsonRequestBody('#/components/schemas/NameGenerateRequest'),
+          responses: { '200': { description: '遵循用字条件的姓名候选及逐名分析' } },
+        },
+      },
+      '/name/analyze': {
+        post: {
+          summary: '解析中文姓名的字形、康熙笔画、五格与三才',
+          requestBody: openApiJsonRequestBody('#/components/schemas/NameAnalyzeRequest'),
+          responses: { '200': { description: '姓名结构化解析结果' } },
+        },
+      },
+      '/name/generate/prompt': {
+        post: {
+          summary: '结合出生资料与姓名候选生成完整起名提示词',
+          requestBody: openApiJsonRequestBody('#/components/schemas/NameGenerateRequest'),
+          responses: { '200': { description: '姓名候选与可直接交给 AI 的完整提示词' } },
+        },
+      },
+      '/name/analyze/prompt': {
+        post: {
+          summary: '结合出生资料生成完整姓名解析提示词',
+          requestBody: openApiJsonRequestBody('#/components/schemas/NameAnalyzeRequest'),
+          responses: { '200': { description: '姓名分析底稿与可直接交给 AI 的完整提示词' } },
+        },
+      },
+      '/character/analyze': {
+        post: {
+          summary: '解析汉字的繁简笔画、五行、读音、完整释义与康熙字典原文',
+          requestBody: openApiJsonRequestBody('#/components/schemas/CharacterAnalyzeRequest'),
+          responses: { '200': { description: '逐字资料与合计笔画' } },
+        },
+      },
+      '/divination/zhuge/prompt': {
+        post: {
+          summary: '按三字取数并生成诸葛神数完整解读提示词',
+          responses: { '200': { description: '取数结果与可直接交给 AI 的完整提示词' } },
+        },
+      },
+      '/divination/kongming/prompt': {
+        post: {
+          summary: '取得五枚硬币的阴阳卦象并生成孔明神卦完整解读提示词',
+          responses: { '200': { description: '卦象结果与可直接交给 AI 的完整提示词' } },
+        },
+      },
+      '/character/select': {
+        post: {
+          summary: '按康熙笔画、五行和读音筛选汉字',
+          requestBody: openApiJsonRequestBody('#/components/schemas/CharacterSelectRequest'),
+          responses: { '200': { description: '符合条件的常用汉字' } },
+        },
+      },
+      '/number/analyze': {
+        post: {
+          summary: '解析手机号、车牌号及一般编号的数字能量',
+          requestBody: openApiJsonRequestBody('#/components/schemas/NumberAnalyzeRequest'),
+          responses: { '200': { description: '字母换算、八星磁场、0和5作用与组合分布' } },
+        },
+      },
+      '/number/analyze/prompt': {
+        post: {
+          summary: '解析数字能量并生成完整解读提示词',
+          requestBody: openApiJsonRequestBody('#/components/schemas/NumberAnalyzeRequest'),
+          responses: { '200': { description: '数字能量结果与可直接交给 AI 的完整提示词' } },
+        },
+      },
+      '/divination/zhuge': {
+        post: {
+          summary: '按三个汉字的康熙笔画计算诸葛神数',
+          requestBody: openApiJsonRequestBody('#/components/schemas/ZhugeRequest'),
+          responses: { '200': { description: '取数过程与对应签文' } },
+        },
+      },
+      '/divination/kongming': {
+        post: {
+          summary: '按五枚硬币的阴阳结果起孔明神卦',
+          requestBody: openApiJsonRequestBody('#/components/schemas/KongmingRequest', false),
+          responses: { '200': { description: '五钱卦象、卦名、吉凶与卦诗' } },
+        },
+      },
       '/bazi/calculate': {
         post: {
           summary: '八字排盘',
@@ -689,6 +820,17 @@ export function getPublicApiOpenApiDocument(
           responses: { '200': { description: '八字、紫微轻量摘要和合参结构化提示词' } },
         },
       },
+      '/consultation/thematic/prompt': {
+        post: {
+          summary: '大类主题命理咨询并生成 AI 解读提示词',
+          description:
+            '支持指定大类主题（默认 general 通用，可选 relationship 感情、career 事业、wealth 财运、health 健康、family 家庭、academic 学业、timing 岁运时机）与术式体系（默认 bazi_ziwei 双盘合参，可选 bazi 或 ziwei）。自动为 AI 提取针对性盘面核心要素并生成正统严谨的自包含任务书。',
+          requestBody: openApiJsonRequestBody(
+            '#/components/schemas/ThematicConsultationPromptRequest',
+          ),
+          responses: { '200': { description: '咨询主题、结构化盘面焦点与自包含 AI 解读提示词' } },
+        },
+      },
       '/divination/liuyao': {
         post: {
           summary: '六爻起卦',
@@ -731,6 +873,22 @@ export function getPublicApiOpenApiDocument(
           summary: '奇门遁甲排盘',
           requestBody: openApiJsonRequestBody('#/components/schemas/DivinationRequest', false),
           responses: { '200': { description: '奇门盘，含节令背景与复合格局' } },
+        },
+      },
+      '/divination/qimen/lifetime': {
+        post: {
+          summary: '奇门遁甲终身局排盘',
+          description: '生成奇门终身局基础盘、个人标记、阶段卡与动态事件簇。',
+          requestBody: openApiJsonRequestBody('#/components/schemas/DivinationRequest', false),
+          responses: { '200': { description: '奇门终身局结构化盘面数据' } },
+        },
+      },
+      '/divination/qimen/lifetime/prompt': {
+        post: {
+          summary: '奇门遁甲终身局提示词',
+          description: '生成奇门终身局结构化数据并输出自包含提示词任务书。',
+          requestBody: openApiJsonRequestBody('#/components/schemas/DivinationPromptRequest'),
+          responses: { '200': { description: '奇门终身局盘面与自包含提示词' } },
         },
       },
       '/divination/liuren': {
@@ -1009,6 +1167,131 @@ export function getPublicApiOpenApiDocument(
     },
     components: {
       schemas: {
+        NameGenerateRequest: {
+          type: 'object',
+          required: ['surname'],
+          properties: {
+            surname: { type: 'string', minLength: 1, maxLength: 2 },
+            gender: { enum: ['男', '女', '通用'], default: '通用' },
+            givenNameLength: { enum: [1, 2], default: 2 },
+            preferredElements: {
+              type: 'array',
+              uniqueItems: true,
+              items: { enum: ['金', '木', '水', '火', '土'] },
+            },
+            preferredCharacters: { type: 'string', maxLength: 100 },
+            forbiddenCharacters: { type: 'string', maxLength: 100 },
+            generationCharacter: { type: 'string', maxLength: 1 },
+            generationPosition: { enum: ['first', 'second'], default: 'first' },
+            limit: { type: 'integer', minimum: 1, maximum: 50, default: 20 },
+            birth: { $ref: '#/components/schemas/NamingBirthInput' },
+            topicId: { type: 'string', description: '统一解读主题 ID；起名接口通常使用 general。' },
+            subtopicId: { type: 'string', description: '统一解读主题细项 ID，如 naming。' },
+            scope: { enum: [...PROMPT_SCOPE_IDS], description: '统一分析范围。' },
+          },
+        },
+        NameAnalyzeRequest: {
+          type: 'object',
+          required: ['fullName'],
+          properties: {
+            fullName: { type: 'string', minLength: 2, maxLength: 4 },
+            surnameLength: { enum: [1, 2], default: 1 },
+            preferredElements: {
+              type: 'array',
+              uniqueItems: true,
+              items: { enum: ['金', '木', '水', '火', '土'] },
+            },
+            birth: { $ref: '#/components/schemas/NamingBirthInput' },
+            question: { type: 'string', maxLength: 1000 },
+            topicId: { type: 'string', description: '统一解读主题 ID；姓名解析通常使用 general。' },
+            subtopicId: { type: 'string', description: '统一解读主题细项 ID，如 name-analysis。' },
+            scope: { enum: [...PROMPT_SCOPE_IDS], description: '统一分析范围。' },
+          },
+        },
+        NamingBirthInput: {
+          type: 'object',
+          required: ['gender', 'year', 'month', 'day'],
+          properties: {
+            gender: { enum: ['male', 'female'] },
+            year: { type: 'integer', minimum: 1900, maximum: 2100 },
+            month: { type: 'integer', minimum: 1, maximum: 12 },
+            day: { type: 'integer', minimum: 1, maximum: 31 },
+            timeIndex: {
+              type: 'integer',
+              minimum: 0,
+              maximum: 12,
+              description:
+                '时辰索引（0-12）；useTrueSolarTime=false 时必填，启用真太阳时后可改传 birthHour/birthMinute',
+            },
+            dateType: { enum: ['solar', 'lunar'], default: 'solar' },
+            isLeapMonth: { type: 'boolean', default: false },
+            useTrueSolarTime: {
+              type: 'boolean',
+              default: false,
+              description: '启用真太阳时校正；需同时提供 birthHour/birthMinute 与 birthLongitude',
+            },
+            birthHour: { type: 'integer', minimum: 0, maximum: 23 },
+            birthMinute: { type: 'integer', minimum: 0, maximum: 59 },
+            birthPlace: { type: 'string' },
+            birthLongitude: { type: 'number', minimum: -180, maximum: 180 },
+            timezone: { type: 'number', minimum: -12, maximum: 14 },
+            timeZoneId: { type: 'string' },
+            applyChinaDst: {
+              type: 'boolean',
+              default: false,
+              description: '按中国 1986-1991 夏令时规则解释钟表时间',
+            },
+          },
+        },
+        CharacterAnalyzeRequest: {
+          type: 'object',
+          required: ['text'],
+          properties: { text: { type: 'string', minLength: 1, maxLength: 20 } },
+        },
+        CharacterSelectRequest: {
+          type: 'object',
+          properties: {
+            kangxiStrokes: { type: 'integer', minimum: 1, maximum: 64 },
+            wuxing: { enum: ['金', '木', '水', '火', '土'] },
+            pinyin: { type: 'string', maxLength: 32 },
+            commonOnly: {
+              type: 'boolean',
+              default: true,
+              description: '仅GB2312一级字；false包含补充用字',
+            },
+            limit: { type: 'integer', minimum: 1, maximum: 100, default: 50 },
+          },
+        },
+        NumberAnalyzeRequest: {
+          type: 'object',
+          required: ['value'],
+          properties: {
+            value: { type: 'string', minLength: 1, maxLength: 64 },
+            purpose: { enum: ['phone', 'plate', 'general'], default: 'general' },
+            question: { type: 'string', maxLength: 1000 },
+            topicId: { type: 'string', description: '统一解读主题 ID；数字能量通常使用 general。' },
+            subtopicId: { type: 'string', description: '统一解读主题细项 ID，如 number-energy。' },
+            scope: { enum: [...PROMPT_SCOPE_IDS], description: '统一分析范围。' },
+          },
+        },
+        ZhugeRequest: {
+          type: 'object',
+          required: ['text'],
+          properties: { text: { type: 'string', minLength: 3, maxLength: 3 } },
+        },
+        KongmingRequest: {
+          type: 'object',
+          properties: {
+            pattern: {
+              type: 'string',
+              minLength: 5,
+              maxLength: 5,
+              description: '五位阴阳结果，可使用●○、10或阴阳字样；不传则随机起卦。',
+            },
+            seed: DIVINATION_REQUEST_PROPERTIES.seed,
+            replay: DIVINATION_REQUEST_PROPERTIES.replay,
+          },
+        },
         InstantChartRequest: {
           type: 'object',
           required: ['type'],
@@ -1354,6 +1637,12 @@ export function getPublicApiOpenApiDocument(
               description: '时区偏移（七政四余）',
             },
             question: { type: 'string', description: '解读问题（prompt 端点）' },
+            topicId: { type: 'string', description: '统一解读主题 ID。' },
+            subtopicId: { type: 'string', description: '统一解读主题细项 ID。' },
+            promptScope: {
+              enum: [...PROMPT_SCOPE_IDS],
+              description: '统一提示词分析范围；太乙仍使用 scope 表示起计层级。',
+            },
             promptMode: { type: 'string', description: '提示词模式（prompt 端点）' },
             schools: DIVINATION_REQUEST_PROPERTIES.schools,
             detailMode: DIVINATION_REQUEST_PROPERTIES.detailMode,
@@ -1378,6 +1667,9 @@ export function getPublicApiOpenApiDocument(
               description: '明确年干支，如「丙午」。',
             },
             question: { type: 'string', maxLength: MAX_PUBLIC_API_TEXT_FIELD_LENGTH },
+            topicId: { type: 'string', description: '统一解读主题 ID。' },
+            subtopicId: { type: 'string', description: '统一解读主题细项 ID。' },
+            scope: { enum: [...PROMPT_SCOPE_IDS], description: '统一分析范围。' },
             schools: DIVINATION_REQUEST_PROPERTIES.schools,
             responseMode: DIVINATION_REQUEST_PROPERTIES.responseMode,
           },
@@ -1426,6 +1718,12 @@ export function getPublicApiOpenApiDocument(
               description: '自定义纪元下距第一年已经过的完整年数，0 表示第一年。',
             },
             question: { type: 'string', maxLength: MAX_PUBLIC_API_TEXT_FIELD_LENGTH },
+            topicId: { type: 'string', description: '统一解读主题 ID。' },
+            subtopicId: { type: 'string', description: '统一解读主题细项 ID。' },
+            scope: {
+              enum: [...PROMPT_SCOPE_IDS],
+              description: '统一分析范围：cycle=元会运世周期，yearly=值年层级。',
+            },
             schools: DIVINATION_REQUEST_PROPERTIES.schools,
             responseMode: DIVINATION_REQUEST_PROPERTIES.responseMode,
           },
@@ -1440,6 +1738,12 @@ export function getPublicApiOpenApiDocument(
                 question: {
                   type: 'string',
                   maxLength: MAX_PUBLIC_API_TEXT_FIELD_LENGTH,
+                },
+                topicId: { type: 'string', description: '统一解读主题 ID。' },
+                subtopicId: { type: 'string', description: '统一解读主题细项 ID。' },
+                scope: {
+                  enum: [...PROMPT_SCOPE_IDS],
+                  description: '统一分析范围；与 baziFortuneScope 互不替代。',
                 },
                 promptTopic: { enum: [...BAZI_PROMPT_TOPICS] },
                 promptMode: { enum: [...PROMPT_MODES] },
@@ -1497,6 +1801,9 @@ export function getPublicApiOpenApiDocument(
             person1Name: { type: 'string', description: '第一人称呼；仅用于证据来源标注。' },
             person2Name: { type: 'string', description: '第二人称呼；仅用于证据来源标注。' },
             question: { type: 'string', maxLength: MAX_PUBLIC_API_TEXT_FIELD_LENGTH },
+            topicId: { type: 'string', description: '统一解读主题 ID。' },
+            subtopicId: { type: 'string', description: '统一解读主题细项 ID。' },
+            scope: { enum: [...PROMPT_SCOPE_IDS], description: '统一分析范围。' },
             compatType: {
               enum: ['marriage', 'career', 'friendship', 'children', 'parents', 'siblings'],
               description: '关系范围；只影响任务范围，不改变双盘事实计算。',
@@ -1556,6 +1863,12 @@ export function getPublicApiOpenApiDocument(
                   type: 'string',
                   maxLength: MAX_PUBLIC_API_TEXT_FIELD_LENGTH,
                 },
+                topicId: { type: 'string', description: '统一解读主题 ID。' },
+                subtopicId: { type: 'string', description: '统一解读主题细项 ID。' },
+                scope: {
+                  enum: [...PROMPT_SCOPE_IDS],
+                  description: '统一分析范围；promptScope 仍保留为紫微资料范围兼容字段。',
+                },
                 promptTopic: { enum: [...ZIWEI_PROMPT_TOPICS] },
                 promptScope: { enum: [...ZIWEI_PROMPT_SCOPES] },
                 promptMode: { enum: [...PROMPT_MODES] },
@@ -1592,6 +1905,9 @@ export function getPublicApiOpenApiDocument(
               description: '第二人称呼；未传时优先使用 person2.name。',
             },
             question: { type: 'string', maxLength: MAX_PUBLIC_API_TEXT_FIELD_LENGTH },
+            topicId: { type: 'string', description: '统一解读主题 ID。' },
+            subtopicId: { type: 'string', description: '统一解读主题细项 ID。' },
+            scope: { enum: [...PROMPT_SCOPE_IDS], description: '统一分析范围。' },
             promptTopic: {
               enum: [...ZIWEI_PROMPT_TOPICS],
               description: '关系分析主题；只影响提示词任务范围。',
@@ -1619,6 +1935,12 @@ export function getPublicApiOpenApiDocument(
                 question: {
                   type: 'string',
                   maxLength: MAX_PUBLIC_API_TEXT_FIELD_LENGTH,
+                },
+                topicId: { type: 'string', description: '统一解读主题 ID。' },
+                subtopicId: { type: 'string', description: '统一解读主题细项 ID。' },
+                scope: {
+                  enum: [...PROMPT_SCOPE_IDS],
+                  description: '统一分析范围；会同时约束八字与紫微合参任务。',
                 },
                 baziPromptTopic: {
                   enum: [...BAZI_PROMPT_TOPICS],
@@ -1659,6 +1981,78 @@ export function getPublicApiOpenApiDocument(
                   enum: ['default', 'zhongzhou'],
                   description:
                     '紫微安星口径：default 为传统通行安星法，zhongzhou 为中州派安星法；它改变底层排盘，不等同于提示词解读流派。',
+                },
+              },
+            },
+          ],
+        },
+        ThematicConsultationPromptRequest: {
+          allOf: [
+            { $ref: '#/components/schemas/BaziRequest' },
+            {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                system: {
+                  enum: ['bazi_ziwei', 'bazi', 'ziwei'],
+                  default: 'bazi_ziwei',
+                  description:
+                    '咨询术式体系：bazi_ziwei=八字紫微双盘合参（默认最完整）；bazi=专注八字子平；ziwei=专注紫微斗数。',
+                },
+                topic: {
+                  enum: [...THEMATIC_TOPICS],
+                  default: 'general',
+                  description:
+                    '大类主题：general=综合全景（默认）；relationship=婚恋感情；career=事业职场；wealth=求财财富；health=身体健康；family=家庭六亲；academic=学业考试；timing=岁运应期时机。',
+                },
+                methodId: {
+                  enum: ['bazi', 'ziwei', 'bazi-ziwei'],
+                  description:
+                    '统一解读方法 ID：bazi=八字，ziwei=紫微斗数，bazi-ziwei=八字紫微合参；传入后优先于 system。',
+                },
+                topicId: {
+                  enum: [...THEMATIC_TOPICS],
+                  description: '统一解读主题 ID；优先于兼容字段 topic。',
+                },
+                subtopicId: {
+                  type: 'string',
+                  description: '统一解读主题细项 ID；必须属于所选主题。',
+                },
+                scope: {
+                  enum: [...PROMPT_SCOPE_IDS],
+                  description: '统一分析范围；优先于兼容字段 promptScope。',
+                },
+                question: {
+                  type: 'string',
+                  maxLength: MAX_PUBLIC_API_TEXT_FIELD_LENGTH,
+                  description:
+                    '用户具体咨询问题；可选，未提供时依据大类主题自动生成传统理法任务问题。',
+                },
+                promptScope: {
+                  enum: [...ZIWEI_PROMPT_SCOPES],
+                  description: '紫微运限范围：origin=本命盘（默认），full=完整输出版等。',
+                },
+                promptMode: { enum: [...PROMPT_MODES] },
+                responseMode: DIVINATION_REQUEST_PROPERTIES.responseMode,
+                baziSchool: { enum: [...BAZI_SCHOOLS] },
+                baziSchools: {
+                  type: 'array',
+                  minItems: 1,
+                  maxItems: 3,
+                  uniqueItems: true,
+                  items: { enum: [...BAZI_MULTI_SCHOOLS] },
+                },
+                ziweiSchool: { enum: [...ZIWEI_SCHOOLS] },
+                ziweiSchools: {
+                  type: 'array',
+                  minItems: 1,
+                  maxItems: 3,
+                  uniqueItems: true,
+                  items: { enum: [...ZIWEI_SCHOOLS] },
+                },
+                algorithm: {
+                  enum: ['default', 'zhongzhou'],
+                  description: '紫微底层安星口径：default=传统通行安星法；zhongzhou=中州派。',
                 },
               },
             },
@@ -1712,6 +2106,9 @@ export function getPublicApiOpenApiDocument(
                 question: { type: 'string', maxLength: MAX_PUBLIC_API_TEXT_FIELD_LENGTH },
                 promptMode: { enum: [...PROMPT_MODES] },
                 responseMode: DIVINATION_REQUEST_PROPERTIES.responseMode,
+                topicId: { type: 'string', description: '统一解读主题 ID。' },
+                subtopicId: { type: 'string', description: '统一解读主题细项 ID。' },
+                scope: { enum: [...PROMPT_SCOPE_IDS], description: '统一解读资料范围。' },
                 schools: {
                   type: 'array',
                   minItems: 1,
@@ -1835,6 +2232,44 @@ async function route(context: RouteContext) {
       return calculateFoundationShensha(await readJson(context.request));
     case 'instant/calculate':
       return calculateApiResult(context.request, calculateInstantChartApi);
+    case 'name/generate':
+      return calculateCultureTool(async () => generateNameApi(await readJson(context.request)));
+    case 'name/analyze':
+      return calculateCultureTool(async () => analyzeNameApi(await readJson(context.request)));
+    case 'name/generate/prompt':
+      return calculateCultureTool(async () =>
+        buildNameGenerationPromptApi(await readJson(context.request)),
+      );
+    case 'name/analyze/prompt':
+      return calculateCultureTool(async () =>
+        buildNameAnalysisPromptApi(await readJson(context.request)),
+      );
+    case 'character/analyze':
+      return calculateCultureTool(async () =>
+        analyzeChineseCharactersWithReferences(
+          readString(await readJson(context.request), 'text', ''),
+        ),
+      );
+    case 'character/select':
+      return calculateCultureTool(async () => selectCharactersApi(await readJson(context.request)));
+    case 'number/analyze':
+      return calculateCultureTool(async () => analyzeNumberApi(await readJson(context.request)));
+    case 'number/analyze/prompt':
+      return calculateCultureTool(async () =>
+        buildNumberEnergyPromptApi(await readJson(context.request)),
+      );
+    case 'divination/zhuge':
+      return calculateCultureTool(async () =>
+        calculateZhugeNumber(readString(await readJson(context.request), 'text', '')),
+      );
+    case 'divination/kongming':
+      return calculateCultureTool(async () =>
+        calculateKongmingApi(await readJson(context.request, true)),
+      );
+    case 'divination/zhuge/prompt':
+      return buildDivinationPromptResult('zhuge', await readJson(context.request));
+    case 'divination/kongming/prompt':
+      return buildDivinationPromptResult('kongming', await readJson(context.request, true));
     case 'bazi/calculate':
       return calculateApiResult(context.request, calculateBaziApi);
     case 'bazi/prompt':
@@ -1853,6 +2288,8 @@ async function route(context: RouteContext) {
       return buildZiweiCompatibilityPromptApi(await readJson(context.request));
     case 'bazi-ziwei/prompt':
       return buildBaziZiweiPrompt(await readJson(context.request));
+    case 'consultation/thematic/prompt':
+      return buildThematicConsultationPromptApi(await readJson(context.request));
     case 'divination/liuyao':
       return calculateApiResult(context.request, calculateLiuyao, true);
     case 'divination/liuyao/prompt':
@@ -1873,6 +2310,10 @@ async function route(context: RouteContext) {
       return calculateApiResult(context.request, calculateQimenApi, true);
     case 'divination/qimen/prompt':
       return buildDivinationPromptResult('qimen', await readJson(context.request));
+    case 'divination/qimen/lifetime':
+      return calculateApiResult(context.request, calculateQimenLifetimeApi, true);
+    case 'divination/qimen/lifetime/prompt':
+      return buildQimenLifetimePromptResult(await readJson(context.request));
     case 'divination/liuren':
       return calculateApiResult(context.request, calculateLiuren, true);
     case 'divination/liuren/prompt':
@@ -1937,6 +2378,194 @@ async function route(context: RouteContext) {
     default:
       throw new ApiError(404, 'NOT_FOUND', '没有找到对应的 API 路径。');
   }
+}
+
+const NAME_WUXING = ['金', '木', '水', '火', '土'] as const;
+
+async function calculateCultureTool<T>(calculate: () => T | Promise<T>): Promise<T> {
+  try {
+    return await calculate();
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw new ApiError(
+      400,
+      'BAD_REQUEST',
+      error instanceof Error ? error.message : '输入参数无法完成计算。',
+    );
+  }
+}
+
+function readWuxingList(input: JsonRecord, key: string): Wuxing[] | undefined {
+  const value = input[key];
+  if (value === undefined) return undefined;
+  if (
+    !Array.isArray(value) ||
+    value.length > 5 ||
+    value.some((item) => !NAME_WUXING.includes(item as Wuxing))
+  ) {
+    throw new ApiError(400, 'BAD_REQUEST', `${key} 必须是金、木、水、火、土组成的数组。`);
+  }
+  return [...new Set(value)] as Wuxing[];
+}
+
+function generateNameApi(input: JsonRecord) {
+  return generateChineseNames({
+    surname: readString(input, 'surname', ''),
+    gender: readEnum(input, 'gender', ['男', '女', '通用'] as const, '通用'),
+    givenNameLength: readInteger(input, 'givenNameLength', 1, 2, 2) as 1 | 2,
+    preferredElements: readWuxingList(input, 'preferredElements'),
+    preferredCharacters: readString(input, 'preferredCharacters', '').trim() || undefined,
+    forbiddenCharacters: readString(input, 'forbiddenCharacters', '').trim() || undefined,
+    generationCharacter: readString(input, 'generationCharacter', '').trim() || undefined,
+    generationPosition: readEnum(
+      input,
+      'generationPosition',
+      ['first', 'second'] as const,
+      'first',
+    ),
+    limit: readInteger(input, 'limit', 1, 50, 20),
+    birth: readNamingBirthInput(input),
+  });
+}
+
+function analyzeNameApi(input: JsonRecord) {
+  return analyzeChineseName({
+    fullName: readString(input, 'fullName', ''),
+    surnameLength: readInteger(input, 'surnameLength', 1, 2, 1) as 1 | 2,
+    xiYong: readWuxingList(input, 'preferredElements'),
+    birth: readNamingBirthInput(input),
+  });
+}
+
+function buildNameGenerationPromptApi(input: JsonRecord) {
+  const candidates = generateNameApi(input);
+  const selection = readSharedPromptSelection(input, 'name.generation');
+  const birth = readNamingBirthInput(input);
+  const gender = readEnum(input, 'gender', ['男', '女', '通用'] as const, '通用');
+  const preferredCharacters = readString(input, 'preferredCharacters', '').trim() || undefined;
+  const forbiddenCharacters = readString(input, 'forbiddenCharacters', '').trim() || undefined;
+  const generationCharacter = readString(input, 'generationCharacter', '').trim() || undefined;
+  const generationPosition = readEnum(
+    input,
+    'generationPosition',
+    ['first', 'second'] as const,
+    'first',
+  );
+  return {
+    candidates,
+    prompt: buildChineseNamingPrompt({
+      surname: readString(input, 'surname', ''),
+      gender,
+      candidates,
+      suitableCharacters: selectNamingCharacters({
+        gender,
+        preferredElements: readWuxingList(input, 'preferredElements'),
+        preferredCharacters,
+        forbiddenCharacters,
+        birth,
+        limit: 24,
+      }),
+      preferredCharacters,
+      forbiddenCharacters,
+      generationCharacter,
+      generationPosition,
+      selection,
+    }),
+    ...(selection ? { selection } : {}),
+  };
+}
+
+function buildNameAnalysisPromptApi(input: JsonRecord) {
+  const analysis = analyzeNameApi(input);
+  const selection = readSharedPromptSelection(input, 'name.chineseAnalysis');
+  return {
+    analysis,
+    prompt: buildChineseNameAnalysisPrompt({
+      analysis,
+      question: readString(input, 'question', '').trim() || undefined,
+      selection,
+    }),
+    ...(selection ? { selection } : {}),
+  };
+}
+
+function readNamingBirthInput(input: JsonRecord): NamingBirthInput | undefined {
+  const value = input.birth;
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ApiError(400, 'BAD_REQUEST', 'birth 必须是出生资料对象。');
+  }
+  const birth = value as JsonRecord;
+  const useTrueSolarTime = readBoolean(birth, 'useTrueSolarTime', false);
+  return {
+    gender: readEnum(birth, 'gender', ['male', 'female'] as const),
+    year: readInteger(birth, 'year', 1900, 2100),
+    month: readInteger(birth, 'month', 1, 12),
+    day: readInteger(birth, 'day', 1, 31),
+    // 启用真太阳时时允许以 birthHour/birthMinute 替代时辰索引；传统时辰模式仍必填
+    timeIndex:
+      useTrueSolarTime && birth.timeIndex === undefined
+        ? ''
+        : readInteger(birth, 'timeIndex', 0, 12),
+    dateType: readEnum(birth, 'dateType', ['solar', 'lunar'] as const, 'solar'),
+    isLeapMonth: readBoolean(birth, 'isLeapMonth', false),
+    useTrueSolarTime,
+    ...(birth.birthHour !== undefined ? { birthHour: readInteger(birth, 'birthHour', 0, 23) } : {}),
+    ...(birth.birthMinute !== undefined
+      ? { birthMinute: readInteger(birth, 'birthMinute', 0, 59) }
+      : {}),
+    ...(birth.birthPlace !== undefined && typeof birth.birthPlace === 'string'
+      ? { birthPlace: birth.birthPlace }
+      : {}),
+    ...(birth.birthLongitude !== undefined
+      ? { birthLongitude: optNumber(birth, 'birthLongitude', -180, 180) }
+      : {}),
+    ...(birth.timezone !== undefined ? { timezone: optNumber(birth, 'timezone', -12, 14) } : {}),
+    ...(birth.timeZoneId !== undefined && typeof birth.timeZoneId === 'string'
+      ? { timeZoneId: birth.timeZoneId }
+      : {}),
+    ...(birth.applyChinaDst !== undefined
+      ? { applyChinaDst: readBoolean(birth, 'applyChinaDst', false) }
+      : {}),
+  };
+}
+
+function selectCharactersApi(input: JsonRecord) {
+  const wuxing = input.wuxing === undefined ? undefined : readEnum(input, 'wuxing', NAME_WUXING);
+  return selectChineseCharacters({
+    strokes: optInt(input, 'kangxiStrokes', 1, 64),
+    wuxing,
+    pinyin: readString(input, 'pinyin', '').trim() || undefined,
+    commonOnly: readBoolean(input, 'commonOnly', true),
+    limit: readInteger(input, 'limit', 1, 100, 50),
+  });
+}
+
+function analyzeNumberApi(input: JsonRecord) {
+  return analyzeNumber(
+    readString(input, 'value', ''),
+    readEnum(input, 'purpose', ['phone', 'plate', 'general'] as const, 'general'),
+  );
+}
+
+function buildNumberEnergyPromptApi(input: JsonRecord) {
+  const analysis = analyzeNumberApi(input);
+  const selection = readSharedPromptSelection(input, 'name.numberEnergy');
+  return {
+    analysis,
+    prompt: buildNumberEnergyPrompt({
+      analysis,
+      question: readString(input, 'question', '').trim() || undefined,
+      selection,
+    }),
+    ...(selection ? { selection } : {}),
+  };
+}
+
+function calculateKongmingApi(input: JsonRecord) {
+  const pattern = readString(input, 'pattern', '').trim() || undefined;
+  if (pattern) assertNoRandomOptions(input, '指定卦象时不接受 seed 或 replay。');
+  return castKongmingHexagram(pattern, pattern ? undefined : readRandomOptions(input));
 }
 
 async function calculateApiResult(
@@ -2271,7 +2900,74 @@ function buildMetaphysicsPrompt(
     readString(input, 'question', '').trim() || '请综合解读本次排盘的重点、风险与行动建议。';
   const schools =
     input.schools === undefined ? undefined : readPromptSchools(input, getPromptSchoolIds(method));
-  return buildSharedMetaphysicsPrompt(basePrompt, question, { method, schools });
+  const topicId = input.topicId === undefined ? undefined : readString(input, 'topicId', '').trim();
+  const subtopicId =
+    input.subtopicId === undefined ? undefined : readString(input, 'subtopicId', '').trim();
+  const selectionScope =
+    input.promptScope === undefined ? undefined : readString(input, 'promptScope', '').trim();
+  return buildSharedMetaphysicsPrompt(basePrompt, question, {
+    method,
+    schools,
+    topicId,
+    subtopicId,
+    scope: selectionScope,
+  });
+}
+
+function readSharedPromptSelection(input: JsonRecord, methodId: string, scopeKey = 'scope') {
+  if (
+    input.topicId === undefined &&
+    input.subtopicId === undefined &&
+    input[scopeKey] === undefined
+  ) {
+    return undefined;
+  }
+  const resolution = resolvePromptSelection({
+    methodId,
+    topicId: input.topicId === undefined ? undefined : readString(input, 'topicId', ''),
+    subtopicId: input.subtopicId === undefined ? undefined : readString(input, 'subtopicId', ''),
+    scope: input[scopeKey] === undefined ? undefined : readString(input, scopeKey, ''),
+  });
+  if (!resolution.ok) {
+    throw new ApiError(400, 'BAD_REQUEST', resolution.message);
+  }
+  return resolution.selection;
+}
+
+function applyPromptSelectionToText(
+  prompt: string,
+  selection: Parameters<typeof getPromptSelectionSection>[0] | undefined,
+  fallbackTask: string,
+) {
+  if (!selection) return prompt;
+  const taskMatch = /【任务】\n([\s\S]*?)(?=\n\n【问题】|$)/u.exec(prompt);
+  const task = taskMatch?.[1]?.trim() || fallbackTask;
+  const replacement = [
+    `【解读选择】\n${getPromptSelectionSection(selection)}`,
+    `【任务】\n${buildPromptSelectionTask(task, selection)}`,
+  ].join('\n\n');
+  return taskMatch ? prompt.replace(taskMatch[0], replacement) : `${prompt}\n\n${replacement}`;
+}
+
+function toZiweiPromptScope(scope: string | undefined): ZiweiPromptScope | undefined {
+  if (!scope) return undefined;
+  if (scope === 'natal') return 'origin';
+  if (scope === 'custom' || scope === 'event' || scope === 'date-range' || scope === 'cycle') {
+    return undefined;
+  }
+  return scope as ZiweiPromptScope;
+}
+
+function toBaziFortuneScope(scope: string | undefined) {
+  const mapped = {
+    natal: 'natal',
+    full: 'full',
+    decadal: 'dayun',
+    yearly: 'year',
+    monthly: 'month',
+    daily: 'day',
+  } as const;
+  return scope ? mapped[scope as keyof typeof mapped] : undefined;
 }
 
 function calculateBaZhaiApi(input: JsonRecord) {
@@ -2327,6 +3023,7 @@ function calculateBaZhaiApi(input: JsonRecord) {
 
 function buildBaZhaiPrompt(input: JsonRecord) {
   const result = calculateBaZhaiApi(input);
+  const selection = readSharedPromptSelection(input, 'bazhai', 'promptScope');
   return buildPromptApiResult({
     responseMode: readPromptResponseMode(input),
     prompt: buildSharedMetaphysicsPrompt(
@@ -2340,9 +3037,14 @@ function buildBaZhaiPrompt(input: JsonRecord) {
             : readPromptSchools(input, getPromptSchoolIds('bazhai')),
         measurement: (result as { directionMeasurement?: { promptText: string } })
           .directionMeasurement?.promptText,
+        topicId: input.topicId === undefined ? undefined : readString(input, 'topicId', ''),
+        subtopicId:
+          input.subtopicId === undefined ? undefined : readString(input, 'subtopicId', ''),
+        scope: input.promptScope === undefined ? undefined : readString(input, 'promptScope', ''),
       },
     ),
     fullResult: result,
+    resultSummary: selection ? { selection } : undefined,
   });
 }
 
@@ -2374,10 +3076,12 @@ function calculateZodiacApi(input: JsonRecord) {
 
 function buildZodiacPrompt(input: JsonRecord) {
   const result = calculateZodiacApi(input);
+  const selection = readSharedPromptSelection(input, 'zodiac');
   return buildPromptApiResult({
     responseMode: readPromptResponseMode(input),
     prompt: buildMetaphysicsPrompt(result.prompt, input, 'zodiac'),
     fullResult: result,
+    resultSummary: selection ? { selection } : undefined,
   });
 }
 
@@ -2393,12 +3097,12 @@ function calculateTaiyiApi(input: JsonRecord) {
     if (scope !== 'year') {
       const month = readInteger(input, 'month', 1, 12);
       const day = readInteger(input, 'day', 1, 31);
-      const hour = scope === 'hour' ? readInteger(input, 'hour', 0, 23) : 12;
-      const minute = scope === 'hour' ? readInteger(input, 'minute', 0, 59, 0) : 0;
-      date = new Date(year, month - 1, day, hour, minute, 0);
-      if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
-        throw new Error('太乙日期无效。');
-      }
+      // 月计/日计也允许明确时分（默认中午 12:00），便于核对交节前后的局数差异
+      const hour = readInteger(input, 'hour', 0, 23, scope === 'hour' ? undefined : 12);
+      const minute = readInteger(input, 'minute', 0, 59, 0);
+      date = new Date(
+        resolveCivilTime({ year, month, day, hour, minute, second: 0, timezone: 8 }).utcTimestamp,
+      );
     }
     return taiyi.generateTaiyi({
       scope,
@@ -2417,10 +3121,12 @@ function calculateTaiyiApi(input: JsonRecord) {
 
 function buildTaiyiPrompt(input: JsonRecord) {
   const result = calculateTaiyiApi(input);
+  const selection = readSharedPromptSelection(input, 'taiyi', 'promptScope');
   return buildPromptApiResult({
     responseMode: readPromptResponseMode(input),
     prompt: buildMetaphysicsPrompt(result.prompt, input, 'taiyi'),
     fullResult: result,
+    resultSummary: selection ? { selection } : undefined,
   });
 }
 
@@ -2451,6 +3157,7 @@ function calculateWuyunLiuqiApi(input: JsonRecord) {
 
 function buildWuyunLiuqiPromptApi(input: JsonRecord) {
   const result = calculateWuyunLiuqiApi(input);
+  const selection = readSharedPromptSelection(input, 'wuyun-liuqi');
   const schools = readPromptSchools(input, getPromptSchoolIds('wuyun-liuqi')) as
     Array<'yunqi' | 'sitian' | 'kezhu'> | undefined;
   return buildPromptApiResult({
@@ -2459,6 +3166,7 @@ function buildWuyunLiuqiPromptApi(input: JsonRecord) {
       result,
       readString(input, 'question', '').trim() || undefined,
       schools,
+      selection,
     ),
     resultSummary: {
       yearGanZhi: result.input.yearGanZhi,
@@ -2466,9 +3174,11 @@ function buildWuyunLiuqiPromptApi(input: JsonRecord) {
       sitian: result.sitian,
       zaiquan: result.zaiquan,
       annualRelation: result.annualRelation,
+      annualClassification: result.annualClassification,
       annualConformities: result.annualConformities,
       movementSteps: result.movementSteps,
       qiSteps: result.qiSteps,
+      ...(selection ? { selection } : {}),
     },
     fullResult: result,
   });
@@ -2520,12 +3230,18 @@ function buildHuangjiJingshiPromptApi(input: JsonRecord) {
   const result = calculateHuangjiJingshiApi(input);
   const schools = readPromptSchools(input, getPromptSchoolIds('huangji-jingshi')) as
     Array<'yuanhui' | 'guaqi'> | undefined;
+  const topicId = input.topicId === undefined ? undefined : readString(input, 'topicId', '').trim();
+  const subtopicId =
+    input.subtopicId === undefined ? undefined : readString(input, 'subtopicId', '').trim();
+  const scope = input.scope === undefined ? undefined : readString(input, 'scope', '').trim();
+  const selection = readDivinationPromptSelection('huangji', input);
   return buildPromptApiResult({
     responseMode: readPromptResponseMode(input),
     prompt: huangjiJingshi.buildHuangjiJingshiPrompt(
       result,
       readString(input, 'question', '').trim() || undefined,
       schools,
+      { topicId, subtopicId, scope },
     ),
     resultSummary: {
       input: result.input,
@@ -2534,6 +3250,7 @@ function buildHuangjiJingshiPromptApi(input: JsonRecord) {
       conversion: result.conversion,
       forecast: result.forecast,
       dateTimeForecast: result.dateTimeForecast,
+      ...(selection ? { selection } : {}),
     },
     fullResult: result,
   });
@@ -2552,6 +3269,16 @@ function calculateQizhengApi(input: JsonRecord) {
   const timeZoneId =
     input.timeZoneId === undefined ? undefined : readString(input, 'timeZoneId', '');
   const useTrueSolarTime = readBoolean(input, 'useTrueSolarTime', false);
+  const gender =
+    input.gender === undefined ? undefined : readEnum(input, 'gender', ['male', 'female'] as const);
+  const flowYear =
+    input.flowYear === undefined ? undefined : readInteger(input, 'flowYear', 1900, 2200);
+  const flowMonth =
+    input.flowMonth === undefined ? undefined : readInteger(input, 'flowMonth', 1, 12);
+  const flowDay = input.flowDay === undefined ? undefined : readInteger(input, 'flowDay', 1, 31);
+  const flowHour = input.flowHour === undefined ? undefined : readInteger(input, 'flowHour', 0, 23);
+  const flowMinute =
+    input.flowMinute === undefined ? undefined : readInteger(input, 'flowMinute', 0, 59);
   try {
     return qizheng.generateQizheng({
       year,
@@ -2564,6 +3291,12 @@ function calculateQizhengApi(input: JsonRecord) {
       ...(timezone !== undefined ? { timezone } : {}),
       ...(timeZoneId ? { timeZoneId } : {}),
       ...(useTrueSolarTime ? { useTrueSolarTime: true } : {}),
+      ...(gender ? { gender } : {}),
+      ...(flowYear !== undefined ? { flowYear } : {}),
+      ...(flowMonth !== undefined ? { flowMonth } : {}),
+      ...(flowDay !== undefined ? { flowDay } : {}),
+      ...(flowHour !== undefined ? { flowHour } : {}),
+      ...(flowMinute !== undefined ? { flowMinute } : {}),
     });
   } catch (error) {
     throw new ApiError(
@@ -2588,10 +3321,12 @@ function calculateXuanKongApi(input: JsonRecord) {
     input.measurementUncertaintyDegrees === undefined
       ? undefined
       : readNumberLike(input, 'measurementUncertaintyDegrees', 0, 45);
-  const guaType =
-    input.guaType === undefined
-      ? undefined
-      : (readEnum(input, 'guaType', ['下卦', '替卦']) as '下卦' | '替卦');
+  const guaType = input.guaType === undefined ? undefined : readEnum(input, 'guaType', ['下卦']);
+  const flowYear =
+    input.flowYear === undefined ? undefined : readInteger(input, 'flowYear', 1, 9999);
+  const flowMonth =
+    input.flowMonth === undefined ? undefined : readInteger(input, 'flowMonth', 1, 12);
+  const flowDay = input.flowDay === undefined ? undefined : readInteger(input, 'flowDay', 1, 31);
   try {
     return xuankong.generateXuanKong({
       year,
@@ -2601,6 +3336,9 @@ function calculateXuanKongApi(input: JsonRecord) {
       ...(sitDegree !== undefined ? { sitDegree } : {}),
       ...(measurementUncertaintyDegrees !== undefined ? { measurementUncertaintyDegrees } : {}),
       ...(guaType ? { guaType } : {}),
+      ...(flowYear !== undefined ? { flowYear } : {}),
+      ...(flowMonth !== undefined ? { flowMonth } : {}),
+      ...(flowDay !== undefined ? { flowDay } : {}),
     });
   } catch (error) {
     throw new ApiError(
@@ -2632,10 +3370,12 @@ function calculateResidentialApi(input: JsonRecord) {
     input.northReference === undefined ? undefined : readString(input, 'northReference', '');
   const magneticDeclinationDegrees = optNumber(input, 'magneticDeclinationDegrees', -30, 30);
   const measurementUncertaintyDegrees = optNumber(input, 'measurementUncertaintyDegrees', 0, 45);
-  const guaType =
-    input.guaType === undefined
-      ? undefined
-      : (readEnum(input, 'guaType', ['下卦', '替卦']) as '下卦' | '替卦');
+  const flowYear =
+    input.flowYear === undefined ? undefined : readInteger(input, 'flowYear', 1, 9999);
+  const flowMonth =
+    input.flowMonth === undefined ? undefined : readInteger(input, 'flowMonth', 1, 12);
+  const flowDay = input.flowDay === undefined ? undefined : readInteger(input, 'flowDay', 1, 31);
+  const guaType = input.guaType === undefined ? undefined : readEnum(input, 'guaType', ['下卦']);
 
   if (mingGua && !BAGUA.includes(mingGua)) {
     throw new ApiError(400, 'BAD_REQUEST', `mingGua 必须是八卦之一：${BAGUA.join('、')}。`);
@@ -2676,6 +3416,9 @@ function calculateResidentialApi(input: JsonRecord) {
       ...(magneticDeclinationDegrees !== undefined ? { magneticDeclinationDegrees } : {}),
       ...(measurementUncertaintyDegrees !== undefined ? { measurementUncertaintyDegrees } : {}),
       ...(guaType ? { guaType } : {}),
+      ...(flowYear !== undefined ? { flowYear } : {}),
+      ...(flowMonth !== undefined ? { flowMonth } : {}),
+      ...(flowDay !== undefined ? { flowDay } : {}),
     });
   } catch (error) {
     throw new ApiError(
@@ -2688,28 +3431,34 @@ function calculateResidentialApi(input: JsonRecord) {
 
 function buildResidentialPrompt(input: JsonRecord) {
   const result = calculateResidentialApi(input);
+  const selection = readSharedPromptSelection(input, 'residential', 'promptScope');
   return buildPromptApiResult({
     responseMode: readPromptResponseMode(input),
     prompt: buildMetaphysicsPrompt(result.prompt, input, 'residential'),
     fullResult: result,
+    resultSummary: selection ? { selection } : undefined,
   });
 }
 
 function buildXuanKongPrompt(input: JsonRecord) {
   const result = calculateXuanKongApi(input);
+  const selection = readSharedPromptSelection(input, 'xuankong', 'promptScope');
   return buildPromptApiResult({
     responseMode: readPromptResponseMode(input),
     prompt: buildMetaphysicsPrompt(result.prompt, input, 'xuankong'),
     fullResult: result,
+    resultSummary: selection ? { selection } : undefined,
   });
 }
 
 function buildQizhengPrompt(input: JsonRecord) {
   const result = calculateQizhengApi(input);
+  const selection = readSharedPromptSelection(input, 'qizheng', 'promptScope');
   return buildPromptApiResult({
     responseMode: readPromptResponseMode(input),
     prompt: buildMetaphysicsPrompt(result.prompt, input, 'qizheng'),
     fullResult: result,
+    resultSummary: selection ? { selection } : undefined,
   });
 }
 
@@ -2801,8 +3550,12 @@ function readShenShaVariants(input: JsonRecord): Partial<ShenShaVariantConfig> |
   return variants;
 }
 
-function buildBaziFortuneContextFromInput(result: BaziChartResult, input: JsonRecord) {
-  const scope = readEnum(input, 'baziFortuneScope', BAZI_FORTUNE_SCOPES, 'natal');
+function buildBaziFortuneContextFromInput(
+  result: BaziChartResult,
+  input: JsonRecord,
+  scopeOverride?: (typeof BAZI_FORTUNE_SCOPES)[number],
+) {
+  const scope = scopeOverride ?? readEnum(input, 'baziFortuneScope', BAZI_FORTUNE_SCOPES, 'natal');
   const selection: BaziFortuneSelectionValue = {
     scope,
     cycleIndex:
@@ -2835,8 +3588,16 @@ function buildBaziFortuneContextFromInput(result: BaziChartResult, input: JsonRe
 
 function buildBaziPrompt(input: JsonRecord) {
   const result = calculateBazi(input);
-  const fortuneScope = readEnum(input, 'baziFortuneScope', BAZI_FORTUNE_SCOPES, 'natal');
-  const fortuneSelectionContext = buildBaziFortuneContextFromInput(result, input);
+  const selection = readSharedPromptSelection(input, 'bazi');
+  const selectedFortuneScope =
+    input.baziFortuneScope === undefined ? toBaziFortuneScope(selection?.scope) : undefined;
+  const fortuneScope = readEnum(
+    input,
+    'baziFortuneScope',
+    BAZI_FORTUNE_SCOPES,
+    selectedFortuneScope ?? 'natal',
+  );
+  const fortuneSelectionContext = buildBaziFortuneContextFromInput(result, input, fortuneScope);
   const schoolValue = input.school;
   const school =
     typeof schoolValue === 'string' && (BAZI_SCHOOLS as readonly string[]).includes(schoolValue)
@@ -2852,6 +3613,7 @@ function buildBaziPrompt(input: JsonRecord) {
     fortuneScope,
     school,
     schools,
+    selection,
   });
   const prompt = basePrompt;
 
@@ -2864,6 +3626,7 @@ function buildBaziPrompt(input: JsonRecord) {
     },
     resultSummary: {
       ...buildCompactBaziResult(result),
+      ...(selection ? { selection } : {}),
     },
   });
 }
@@ -2898,6 +3661,7 @@ function calculateBaziCompatibilityApi(input: JsonRecord) {
 
 function buildBaziCompatibilityPromptApi(input: JsonRecord) {
   const result = calculateBaziCompatibilityApi(input);
+  const selection = readSharedPromptSelection(input, 'bazi');
   const promptParts = getCompatibilityPrompt(
     readString(input, 'question', ''),
     result.charts.person1,
@@ -2909,19 +3673,24 @@ function buildBaziCompatibilityPromptApi(input: JsonRecord) {
       person2Name: readString(input, 'person2Name', ''),
     },
   );
-  const basePrompt = [promptParts.system, promptParts.user].filter(Boolean).join('\n\n');
+  const rawPrompt = [promptParts.system, promptParts.user].filter(Boolean).join('\n\n');
   const schools = readPromptSchools(input, BAZI_MULTI_SCHOOLS) as BaziSchool[] | undefined;
   const normalizedSchools = schools
     ? Array.from(new Set(schools.map((school) => (school === 'traditional' ? 'ziping' : school))))
     : undefined;
   const schoolText = formatPromptSchoolGuidance('bazi', normalizedSchools);
-  const prompt = schoolText
+  const basePrompt = schoolText
     ? insertPromptSectionBeforeHeading(
-        basePrompt,
+        rawPrompt,
         '【问题】',
         `【${normalizedSchools && normalizedSchools.length > 1 ? '多派合参' : '解读流派'}】\n${schoolText}`,
       )
-    : basePrompt;
+    : rawPrompt;
+  const prompt = applyPromptSelectionToText(
+    basePrompt,
+    selection,
+    '请依据双方八字盘面和关系资料完成解读。',
+  );
   return buildPromptApiResult({
     responseMode: readPromptResponseMode(input),
     prompt,
@@ -2931,6 +3700,7 @@ function buildBaziCompatibilityPromptApi(input: JsonRecord) {
       dayMasterRelation: result.compatibility.dayMasterRelation,
       spousePalaceRelations: result.compatibility.spousePalaceRelations,
       summaryFact: result.compatibility.summaryFact,
+      ...(selection ? { selection } : {}),
     },
   });
 }
@@ -2988,7 +3758,14 @@ async function calculateZiwei(input: JsonRecord) {
 }
 
 async function buildZiweiPrompt(input: JsonRecord) {
-  const scope = readEnum(input, 'promptScope', ZIWEI_PROMPT_SCOPES, 'origin') as ZiweiPromptScope;
+  const selection = readSharedPromptSelection(input, 'ziwei');
+  const selectedScope = toZiweiPromptScope(selection?.scope);
+  const scope = readEnum(
+    input,
+    'promptScope',
+    ZIWEI_PROMPT_SCOPES,
+    selectedScope ?? 'origin',
+  ) as ZiweiPromptScope;
   const result = await calculateZiweiRuntime(input, getZiweiPromptCalculationScopes(scope));
   const promptTopic =
     input.promptTopic === undefined
@@ -3010,13 +3787,17 @@ async function buildZiweiPrompt(input: JsonRecord) {
     mode,
     school,
     schools,
+    selection,
   });
 
   return buildPromptApiResult({
     responseMode: readPromptResponseMode(input),
     prompt,
     fullResult: serializableResult,
-    resultSummary: buildCompactZiweiResult(serializableResult),
+    resultSummary: {
+      ...buildCompactZiweiResult(serializableResult),
+      ...(selection ? { selection } : {}),
+    },
   });
 }
 
@@ -3059,6 +3840,7 @@ async function calculateZiweiCompatibilityApi(input: JsonRecord) {
 
 async function buildZiweiCompatibilityPromptApi(input: JsonRecord) {
   assertNoRandomOptions(input, '紫微双盘是确定性计算，不接受 seed 或 replay。');
+  const selection = readSharedPromptSelection(input, 'ziwei');
   const charts = await readZiweiCompatibilityCharts(input);
   const compatibility = analyzeZiweiCompatibility(
     charts.person1.payloadByScope.origin,
@@ -3071,7 +3853,7 @@ async function buildZiweiCompatibilityPromptApi(input: JsonRecord) {
     },
   );
   const topic = readEnum(input, 'promptTopic', ZIWEI_PROMPT_TOPICS, 'relationship');
-  const prompt = buildCombinedZiweiCompatibilityPrompt({
+  const basePrompt = buildCombinedZiweiCompatibilityPrompt({
     primaryPayload: charts.person1.payloadByScope.origin,
     partnerPayload: charts.person2.payloadByScope.origin,
     primaryAstrolabe: charts.person1.astrolabe,
@@ -3085,6 +3867,11 @@ async function buildZiweiCompatibilityPromptApi(input: JsonRecord) {
     isCustomQuestion: readEnum(input, 'promptMode', PROMPT_MODES, 'framework') === 'custom',
     schools: readPromptSchools(input, ZIWEI_SCHOOLS) as ZiweiSchool[] | undefined,
   });
+  const prompt = applyPromptSelectionToText(
+    basePrompt,
+    selection,
+    '请依据双方紫微盘面和跨盘关系资料完成解读。',
+  );
   const fullResult = {
     charts: {
       person1: buildSerializableZiweiResult(charts.person1),
@@ -3101,13 +3888,21 @@ async function buildZiweiCompatibilityPromptApi(input: JsonRecord) {
       status: compatibility.status,
       people: compatibility.people,
       summaryFact: compatibility.summaryFact,
+      ...(selection ? { selection } : {}),
     },
   });
 }
 
 async function buildBaziZiweiPrompt(input: JsonRecord) {
   const baziResult = calculateBazi(input);
-  const scope = readEnum(input, 'promptScope', ZIWEI_PROMPT_SCOPES, 'origin') as ZiweiPromptScope;
+  const selection = readSharedPromptSelection(input, 'bazi-ziwei');
+  const selectedScope = toZiweiPromptScope(selection?.scope);
+  const scope = readEnum(
+    input,
+    'promptScope',
+    ZIWEI_PROMPT_SCOPES,
+    selectedScope ?? 'origin',
+  ) as ZiweiPromptScope;
   const ziweiResult = await calculateZiweiRuntime(input, getZiweiPromptCalculationScopes(scope));
   const baziTopic = readEnum(
     input,
@@ -3149,6 +3944,7 @@ async function buildBaziZiweiPrompt(input: JsonRecord) {
     baziSchools,
     ziweiSchool,
     ziweiSchools,
+    selection,
   });
   const fullResult = {
     bazi: baziResult,
@@ -3162,23 +3958,184 @@ async function buildBaziZiweiPrompt(input: JsonRecord) {
     resultSummary: {
       bazi: buildCompactBaziResult(baziResult),
       ziwei: buildCompactZiweiResult(serializableZiweiResult),
+      ...(selection ? { selection } : {}),
     },
   });
 }
 
+async function buildThematicConsultationPromptApi(input: JsonRecord) {
+  const legacySystem =
+    readOptionalEnum(input, 'system', ['bazi_ziwei', 'bazi', 'ziwei'] as const) ?? 'bazi_ziwei';
+  const requestedMethodId =
+    input.methodId === undefined ? undefined : readString(input, 'methodId', '').trim();
+  const rawTopic =
+    typeof input.topic === 'string'
+      ? input.topic
+      : typeof input.thematicTopic === 'string'
+        ? input.thematicTopic
+        : undefined;
+  const topic = normalizeThematicTopic(rawTopic);
+  const topicId = input.topicId === undefined ? undefined : readString(input, 'topicId', '').trim();
+  const subtopicId =
+    input.subtopicId === undefined ? undefined : readString(input, 'subtopicId', '').trim();
+  const question = typeof input.question === 'string' ? input.question.trim() : undefined;
+  const promptScope = readEnum(
+    input,
+    'promptScope',
+    ZIWEI_PROMPT_SCOPES,
+    'origin',
+  ) as ZiweiPromptScope;
+  const genericScope =
+    input.scope === undefined ? undefined : readEnum(input, 'scope', PROMPT_SCOPE_IDS, 'natal');
+  const methodId =
+    requestedMethodId ??
+    (legacySystem === 'bazi' ? 'bazi' : legacySystem === 'ziwei' ? 'ziwei' : 'bazi-ziwei');
+  const selectionResolution = resolvePromptSelection({
+    methodId,
+    topicId: topicId ?? topic,
+    subtopicId,
+    scope: genericScope,
+  });
+  if (!selectionResolution.ok) {
+    throw new ApiError(400, 'BAD_REQUEST', selectionResolution.message);
+  }
+  if (!['bazi', 'ziwei', 'bazi-ziwei'].includes(selectionResolution.selection.methodId)) {
+    throw new ApiError(400, 'BAD_REQUEST', '大类主题咨询只支持 bazi、ziwei、bazi-ziwei 方法。');
+  }
+  const system: 'bazi_ziwei' | 'bazi' | 'ziwei' =
+    selectionResolution.selection.methodId === 'bazi'
+      ? 'bazi'
+      : selectionResolution.selection.methodId === 'ziwei'
+        ? 'ziwei'
+        : 'bazi_ziwei';
+  const scope =
+    genericScope === undefined
+      ? promptScope
+      : genericScope === 'natal'
+        ? 'origin'
+        : (genericScope as ZiweiPromptScope);
+  const mode = readEnum(input, 'promptMode', PROMPT_MODES, 'framework') as PromptMode;
+
+  const baziSchoolValue = input.baziSchool;
+  const baziSchool =
+    typeof baziSchoolValue === 'string' &&
+    (BAZI_SCHOOLS as readonly string[]).includes(baziSchoolValue)
+      ? (baziSchoolValue as BaziSchool)
+      : undefined;
+  const ziweiSchoolValue = input.ziweiSchool;
+  const ziweiSchool =
+    typeof ziweiSchoolValue === 'string' &&
+    (ZIWEI_SCHOOLS as readonly string[]).includes(ziweiSchoolValue)
+      ? (ziweiSchoolValue as ZiweiSchool)
+      : undefined;
+  const baziSchools = readPromptSchools(input, BAZI_MULTI_SCHOOLS, 'baziSchools') as
+    BaziSchool[] | undefined;
+  const ziweiSchools = readPromptSchools(input, ZIWEI_SCHOOLS, 'ziweiSchools') as
+    ZiweiSchool[] | undefined;
+
+  let baziResult: BaziChartResult | undefined;
+  let ziweiResult: Awaited<ReturnType<typeof calculateZiweiRuntime>> | undefined;
+  let serializableZiweiResult: ReturnType<typeof buildSerializableZiweiResult> | undefined;
+
+  if (system === 'bazi_ziwei' || system === 'bazi') {
+    baziResult = calculateBazi(input);
+  }
+
+  if (system === 'bazi_ziwei' || system === 'ziwei') {
+    ziweiResult = await calculateZiweiRuntime(input, getZiweiPromptCalculationScopes(scope));
+    serializableZiweiResult = buildSerializableZiweiResult(ziweiResult);
+  }
+
+  const promptResult = buildThematicConsultationPrompt({
+    system,
+    methodId: selectionResolution.selection.methodId,
+    topic,
+    topicId: topicId ?? topic,
+    subtopicId,
+    scope: genericScope,
+    question,
+    mode,
+    baziResult,
+    ziweiResult,
+    ziweiScope: scope,
+    baziSchool,
+    baziSchools,
+    ziweiSchool,
+    ziweiSchools,
+  });
+
+  const fullResult = {
+    system: promptResult.system,
+    methodId: promptResult.methodId,
+    topic: promptResult.topic,
+    topicLabel: promptResult.topicLabel,
+    topicTitle: promptResult.topicTitle,
+    subtopicId: promptResult.subtopicId,
+    subtopicLabel: promptResult.subtopicLabel,
+    selection: promptResult.selection,
+    focusPalaces: promptResult.focusPalaces,
+    focusElements: promptResult.focusElements,
+    scope: promptResult.scope,
+    bazi: baziResult,
+    ziwei: serializableZiweiResult,
+  };
+
+  const resultSummary: Record<string, unknown> = {
+    system: promptResult.system,
+    methodId: promptResult.methodId,
+    topic: promptResult.topic,
+    topicLabel: promptResult.topicLabel,
+    topicTitle: promptResult.topicTitle,
+    subtopicId: promptResult.subtopicId,
+    subtopicLabel: promptResult.subtopicLabel,
+    selection: promptResult.selection,
+    focusPalaces: promptResult.focusPalaces,
+    focusElements: promptResult.focusElements,
+    scope: promptResult.scope,
+  };
+  if (baziResult) {
+    resultSummary.bazi = buildCompactBaziResult(baziResult);
+  }
+  if (serializableZiweiResult) {
+    resultSummary.ziwei = buildCompactZiweiResult(serializableZiweiResult);
+  }
+
+  return buildPromptApiResult({
+    responseMode: readPromptResponseMode(input),
+    prompt: promptResult.prompt,
+    fullResult,
+    resultSummary,
+    summary: resultSummary,
+  });
+}
+
 function calculateLiuyao(input: JsonRecord) {
-  const method = readOptionalEnum(input, 'liuyaoMethod', ['time', 'manual', 'coins'] as const);
+  const method = readOptionalEnum(input, 'liuyaoMethod', [
+    'time',
+    'manual',
+    'coins',
+    'yarrow',
+  ] as const);
+  const yarrowSplits = readOptionalIntegerArray(input, 'yarrowSplits', 18, 1, 47);
   const yaos = readOptionalIntegerArray(input, 'yaos', 6, 6, 9);
   const randomOptions = readRandomOptions(input);
   const options: LiuyaoGenerationOptions | undefined =
-    method || yaos || randomOptions
+    method || yaos || yarrowSplits || randomOptions
       ? {
           method,
           yaos,
+          yarrowSplits,
           ...randomOptions,
         }
       : undefined;
-  return generateLiuyao(readCustomDate(input), options);
+  try {
+    return generateLiuyao(readCustomDate(input), options);
+  } catch (error) {
+    if (error instanceof MingyuCoreError && error.category === 'validation') {
+      throw new ApiError(400, 'BAD_REQUEST', error.message);
+    }
+    throw error;
+  }
 }
 
 function calculateQimen(input: JsonRecord) {
@@ -3197,6 +4154,126 @@ function calculateQimen(input: JsonRecord) {
 function calculateQimenApi(input: JsonRecord) {
   const result = calculateQimen(input);
   return input.detailMode === 'compact' ? buildCompactQimenResult(result) : result;
+}
+
+function calculateQimenLifetimeApi(input: JsonRecord) {
+  assertNoRandomOptions(input, '奇门遁甲是确定性排盘，不接受 seed 或 replay。');
+  const birthDateTime = readString(input, 'birthDateTime', '');
+  if (!birthDateTime) {
+    throw new ApiError(400, 'BAD_REQUEST', '奇门终身局排盘必须提供出生时间 birthDateTime。');
+  }
+  const lifetimeInput: QimenLifetimeInput = {
+    birthDateTime,
+    timeZoneId: typeof input.timeZoneId === 'string' ? input.timeZoneId : undefined,
+    timezone: typeof input.timezone === 'number' ? input.timezone : undefined,
+    location: isRecord(input.location)
+      ? (input.location as QimenLifetimeInput['location'])
+      : undefined,
+    calendarType: readEnum(input, 'calendarType', ['solar', 'lunar'], 'solar') as 'solar' | 'lunar',
+    isLeapMonth: Boolean(input.isLeapMonth),
+    timeStandard: readEnum(input, 'timeStandard', ['civil', 'trueSolar'], 'civil') as
+      'civil' | 'trueSolar',
+    applyChinaDst: Boolean(input.applyChinaDst),
+    method: readEnum(input, 'method', ['zhuanpan', 'feipan'], 'zhuanpan') as 'zhuanpan' | 'feipan',
+    juMethod: readEnum(input, 'juMethod', ['chaibu', 'zhirun'], 'chaibu') as 'chaibu' | 'zhirun',
+    stagePolicy: isRecord(input.stagePolicy)
+      ? (input.stagePolicy as unknown as QimenLifetimeInput['stagePolicy'])
+      : undefined,
+    periodRange: isRecord(input.periodRange)
+      ? (input.periodRange as unknown as QimenLifetimeInput['periodRange'])
+      : undefined,
+    topics: Array.isArray(input.topics)
+      ? (input.topics as QimenLifetimeInput['topics'])
+      : undefined,
+    name: typeof input.name === 'string' ? input.name : undefined,
+    gender: readEnum(input, 'gender', ['male', 'female', ''], '') as 'male' | 'female' | undefined,
+    schools: Array.isArray(input.schools) ? (input.schools as readonly string[]) : undefined,
+    detailMode: readDetailMode(input),
+  };
+  const result = calculateQimenLifetime(lifetimeInput);
+  if (lifetimeInput.detailMode === 'compact') {
+    return buildCompactQimenLifetimeResult(result);
+  }
+  return result;
+}
+
+function buildCompactQimenLifetimeResult(result: QimenLifetimeData) {
+  return {
+    schemaVersion: result.schemaVersion,
+    basis: result.basis,
+    baseChart: buildCompactQimenResult(result.baseChart),
+    personalMarkers: result.personalMarkers,
+    topicCandidates: result.topicCandidates,
+    stages: result.stages.map((st) => ({
+      stageIndex: st.stageIndex,
+      title: st.title,
+      ageStart: st.ageStart,
+      ageEnd: st.ageEnd,
+      calendarStart: st.calendarStart,
+      calendarEnd: st.calendarEnd,
+      dominantPalaces: st.dominantPalaces,
+      stageTheme: st.stageTheme,
+      supportFacts: st.supportFacts,
+      constraintFacts: st.constraintFacts,
+    })),
+    eventClusters: result.eventClusters,
+  };
+}
+
+function buildQimenLifetimePromptResult(input: JsonRecord) {
+  assertNoRandomOptions(input, '奇门遁甲是确定性排盘，不接受 seed 或 replay。');
+  const question = readString(input, 'question', '').trim();
+  if (!question) {
+    throw new ApiError(400, 'BAD_REQUEST', '缺少必填字段：question。');
+  }
+  const birthDateTime = readString(input, 'birthDateTime', '');
+  if (!birthDateTime) {
+    throw new ApiError(400, 'BAD_REQUEST', '奇门终身局排盘必须提供出生时间 birthDateTime。');
+  }
+  const lifetimeInput: QimenLifetimeInput = {
+    birthDateTime,
+    timeZoneId: typeof input.timeZoneId === 'string' ? input.timeZoneId : undefined,
+    timezone: typeof input.timezone === 'number' ? input.timezone : undefined,
+    location: isRecord(input.location)
+      ? (input.location as QimenLifetimeInput['location'])
+      : undefined,
+    calendarType: readEnum(input, 'calendarType', ['solar', 'lunar'], 'solar') as 'solar' | 'lunar',
+    isLeapMonth: Boolean(input.isLeapMonth),
+    timeStandard: readEnum(input, 'timeStandard', ['civil', 'trueSolar'], 'civil') as
+      'civil' | 'trueSolar',
+    applyChinaDst: Boolean(input.applyChinaDst),
+    method: readEnum(input, 'method', ['zhuanpan', 'feipan'], 'zhuanpan') as 'zhuanpan' | 'feipan',
+    juMethod: readEnum(input, 'juMethod', ['chaibu', 'zhirun'], 'chaibu') as 'chaibu' | 'zhirun',
+    stagePolicy: isRecord(input.stagePolicy)
+      ? (input.stagePolicy as unknown as QimenLifetimeInput['stagePolicy'])
+      : undefined,
+    periodRange: isRecord(input.periodRange)
+      ? (input.periodRange as unknown as QimenLifetimeInput['periodRange'])
+      : undefined,
+    topics: Array.isArray(input.topics)
+      ? (input.topics as QimenLifetimeInput['topics'])
+      : undefined,
+    name: typeof input.name === 'string' ? input.name : undefined,
+    gender: readEnum(input, 'gender', ['male', 'female', ''], '') as 'male' | 'female' | undefined,
+    schools: Array.isArray(input.schools) ? (input.schools as readonly string[]) : undefined,
+  };
+  const { data, prompt } = generateQimenLifetimePrompt(lifetimeInput, question);
+  const responseMode = readPromptResponseMode(input);
+  return buildPromptApiResult({
+    responseMode,
+    prompt,
+    fullResult: data,
+    summary: {
+      birthDateTime: data.input.birthDateTime,
+      calendar: data.basis.calendar,
+      solarTerm: data.basis.solarTerm,
+      ganzhi: data.baseChart.ganzhi,
+      zhiFu: data.baseChart.zhiFu,
+      zhiShi: data.baseChart.zhiShi,
+      stagesCount: data.stages.length,
+      eventClustersCount: data.eventClusters?.length ?? 0,
+    },
+  });
 }
 
 function calculateMeihua(input: JsonRecord) {
@@ -3241,6 +4318,8 @@ function calculateXiaoliuren(input: JsonRecord) {
     );
   }
   return generateXiaoliuren({
+    rule: readEnum(input, 'xiaoliurenRule', ['common', 'duoneng'], 'common') as
+      'common' | 'duoneng',
     method,
     customDate: readCustomDate(input),
   });
@@ -3409,6 +4488,7 @@ function calculateAstrolabeSynastryApi(input: JsonRecord) {
 
 function buildAstrolabeSynastryPromptApi(input: JsonRecord) {
   const result = calculateAstrolabeSynastryApi(input);
+  const selection = readSharedPromptSelection(input, 'astrolabe-synastry');
   const prompt = buildAstrolabeSynastryPrompt({
     chart1: result.charts.person1,
     chart2: result.charts.person2,
@@ -3419,6 +4499,7 @@ function buildAstrolabeSynastryPromptApi(input: JsonRecord) {
       input.schools === undefined
         ? undefined
         : readPromptSchools(input, getPromptSchoolIds('astrolabe')),
+    selection,
   });
   return buildPromptApiResult({
     responseMode: readPromptResponseMode(input),
@@ -3437,6 +4518,7 @@ function buildAstrolabeSynastryPromptApi(input: JsonRecord) {
         tightAspects: result.synastry.summary.tightAspects,
       },
       summaryFact: buildCompactAstrolabeSynastrySummaryFact(result.synastry.summaryFact),
+      ...(selection ? { selection } : {}),
     },
   });
 }
@@ -3546,6 +4628,7 @@ function buildDivinationPromptResult(
             }
           : rawData;
   const summary = getDivinationSummaryBlocks(method, promptData);
+  const promptSelection = readDivinationPromptSelection(method, input);
   const prompt = buildDivinationPromptText(method, question, promptData, input);
 
   return buildPromptApiResult({
@@ -3553,7 +4636,28 @@ function buildDivinationPromptResult(
     prompt,
     summary,
     fullResult,
+    resultSummary: promptSelection ? { ...summary, selection: promptSelection } : undefined,
   });
+}
+
+function readDivinationPromptSelection(
+  method: Exclude<DivinationMethodId, 'random'>,
+  input: JsonRecord,
+) {
+  if (input.topicId === undefined && input.subtopicId === undefined && input.scope === undefined) {
+    return undefined;
+  }
+  const promptMethodId = method === 'huangji' ? 'huangji-jingshi' : method;
+  const resolution = resolvePromptSelection({
+    methodId: promptMethodId,
+    topicId: input.topicId === undefined ? undefined : readString(input, 'topicId', ''),
+    subtopicId: input.subtopicId === undefined ? undefined : readString(input, 'subtopicId', ''),
+    scope: input.scope === undefined ? undefined : readString(input, 'scope', ''),
+  });
+  if (!resolution.ok) {
+    throw new ApiError(400, 'BAD_REQUEST', resolution.message);
+  }
+  return resolution.selection;
 }
 
 function calculateDivinationData(
@@ -3577,6 +4681,10 @@ function calculateDivinationData(
       return calculateTarot(input);
     case 'ssgw':
       return drawSsgw(input);
+    case 'zhuge':
+      return calculateZhugeNumber(readString(input, 'text', ''));
+    case 'kongming':
+      return calculateKongmingApi(input);
     case 'almanac':
       return calculateAlmanac(input);
     case 'lenormand':
@@ -3618,6 +4726,10 @@ function buildDivinationPromptText(
     method === 'ssgw' || input.schools === undefined
       ? undefined
       : readPromptSchools(input, getPromptSchoolIds(method as PromptSchoolMethod));
+  const topicId = input.topicId === undefined ? undefined : readString(input, 'topicId', '').trim();
+  const subtopicId =
+    input.subtopicId === undefined ? undefined : readString(input, 'subtopicId', '').trim();
+  const scope = input.scope === undefined ? undefined : readString(input, 'scope', '').trim();
 
   return buildDivinationPrompt(method, question, data as DivinationData, supplementaryInfo, {
     isCustomQuestion:
@@ -3633,6 +4745,9 @@ function buildDivinationPromptText(
         ? buildAstrolabePromptScopeText(input, data as AstrolabeData)
         : undefined,
     schools,
+    topicId,
+    subtopicId,
+    scope,
   });
 }
 
@@ -3753,6 +4868,7 @@ function buildCompactBaziResult(result: BaziChartResult) {
     taiYuan: result.taiYuan,
     taiXi: result.taiXi,
     kongWang: result.kongWang,
+    shensha: result.shensha,
     monthCommander: result.monthCommander,
     luckInfo: {
       startInfo: result.luckInfo.startInfo,

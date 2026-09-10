@@ -2,6 +2,8 @@
  * @file Bazi algorithms barrel
  */
 export { baziCalculator, BaziCalculator } from './baziCalculator';
+export { evaluatePatternFulfillment } from './baziPatternFulfillment';
+export type { PatternFulfillmentResult, PatternRemedy } from './baziPatternFulfillment';
 export { buildBaziPersonInput, calculateBaziChartFromInput } from './input';
 export type { BaziChartInputDraft, BaziInputText } from './input';
 export { formatBaziForPrompt } from './baziAnalysisFormatter';
@@ -187,3 +189,14 @@ export type {
   BaziUsefulGodCoverage,
   BaziUsefulGodCoverageItem,
 } from './compatibilityEvidence';
+export { evaluateBaziClimateBalance, type BaziClimateBalanceResult } from './climateBalance';
+export {
+  evaluateBaziMarriageDeep,
+  evaluateNayinCompatibility,
+  evaluateSpousePalaceDeepRelation,
+  evaluateUsefulGodComplementarity,
+  type BaziMarriageDeepEvaluation,
+  type NayinCompatibilityResult,
+  type SpousePalaceDeepRelationResult,
+  type UsefulGodComplementarityResult,
+} from './compatibility-marriage';

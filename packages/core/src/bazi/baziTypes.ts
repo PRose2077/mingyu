@@ -14,18 +14,41 @@ import type { Wuxing } from '../wuxing';
 export { WUXING };
 export type { Wuxing };
 
+export const DAY_MASTER_STRENGTH_STATUSES = [
+  '极强',
+  '身强',
+  '偏强',
+  '中和',
+  '偏弱',
+  '身弱',
+  '极弱',
+  '未知',
+] as const;
+
+export type DayMasterStrengthStatus = (typeof DAY_MASTER_STRENGTH_STATUSES)[number];
+
+export function isStrongDayMasterStatus(status: string): boolean {
+  return status === '极强' || status === '身强' || status === '偏强';
+}
+
+export function isWeakDayMasterStatus(status: string): boolean {
+  return status === '极弱' || status === '身弱' || status === '偏弱';
+}
+
 export type CommanderEntry = [string, number];
 
 export interface Person {
   year: number;
   month: number;
   day: number;
-  timeIndex: number;
+  timeIndex?: number;
   gender: 'male' | 'female' | '';
   isLunar?: boolean;
   isLeapMonth?: boolean;
   useTrueSolarTime?: boolean;
+  isThreePillars?: boolean;
   birthHour?: number;
+
   birthMinute?: number;
   birthPlace?: string;
   birthLongitude?: number;
@@ -259,7 +282,7 @@ export interface ConstraintAnalysis {
 }
 
 export interface DayMasterStrengthAnalysis {
-  status: string;
+  status: DayMasterStrengthStatus;
   details: {
     timely: boolean;
     seasonalEffect: '支持' | '中性' | '削弱';
@@ -279,6 +302,20 @@ export interface PatternAnalysis {
   basis?: string;
   /** 魁罡日（日柱庚辰/壬辰/戊戌/庚戌为外格，《三命通会》） */
   isKuiGang?: boolean;
+  /** 《子平真诠》格局成败、病因与救应药神推导 */
+  fulfillment?: {
+    patternName: string;
+    status: '成格' | '破格' | '破而复成' | '平常';
+    basis: string;
+    contradiction: string;
+    remedies: Array<{
+      stem: string;
+      pillar: 'year' | 'month' | 'day' | 'hour';
+      tenGod: string;
+      effect: string;
+    }>;
+    summary: string;
+  };
 }
 
 export interface UsefulGodAnalysis {
@@ -353,7 +390,10 @@ export interface BaziChartResult {
   timeInfo: TimeInfo;
   /** 四柱（年柱/月柱/日柱/时柱） */
   pillars: Pillars;
+  /** 是否为时辰未知的“前三柱降级”模式 */
+  isThreePillars?: boolean;
   /** 四柱之间可直接复核的伏吟、反吟、合冲刑害破、三合三会关系 */
+
   pillarRelations: import('./baziPromptEnhancement').BaziPillarRelations;
   /** 日主（出生日的天干，代表命主自身） */
   dayMaster: DayMaster;
@@ -393,6 +433,12 @@ export interface BaziChartResult {
   shenShaAnalysis: ShenShaResult;
   /** 自坐信息 */
   ziZuo: ZiZuoResult;
+  /** 调候寒暖燥湿定性（依据《穷通宝鉴》《滴天髓》） */
+  climate?: {
+    nature: '寒局' | '燥局' | '中和' | '微偏寒' | '微偏燥';
+    medicine: string;
+    summary: string;
+  };
   /** 空亡结果 */
   kongWang: KongWangResult;
   /** 各天干的四时旺相休囚死 */

@@ -1,3 +1,4 @@
+import { XIAOLIUREN_RULE_OPTIONS } from 'mingyu-core/divination/xiaoliuren';
 import { useState } from 'react';
 import {
   DIVINATION_METHOD_OPTIONS,
@@ -20,6 +21,11 @@ import {
   resolveInteractiveLenormandCards,
 } from 'mingyu-core/divination/lenormand';
 import { secureRandomIndexSample, secureRandomInt } from 'mingyu-core/random';
+import {
+  getPromptMethodCapability,
+  getPromptSubtopicOptions,
+  getPromptTopicOptions,
+} from 'mingyu-core/prompt';
 import type { DivinationDraft } from '@/lib/divination/engine';
 import type { PersonalHistoryRecord } from '@/lib/history-records';
 import { DropdownSelect } from '@/components/DropdownSelect';
@@ -58,6 +64,7 @@ const JINKOUJUE_BRANCH_OPTIONS = [
 const LIUYAO_METHOD_OPTIONS = [
   { value: 'time', label: '时间起卦' },
   { value: 'coins', label: '手摇' },
+  { value: 'yarrow', label: '蓍草起卦' },
   { value: 'manual', label: '手动录入' },
 ] as const;
 
@@ -123,6 +130,20 @@ const ALMANAC_SUPPLEMENTARY_INFO_FIELDS = [
   },
 ] as const satisfies readonly SupplementaryInfoModalField[];
 
+const PROMPT_SCOPE_LABELS: Record<string, string> = {
+  natal: '本命',
+  full: '完整资料',
+  decadal: '大限 / 大运',
+  yearly: '流年 / 年计',
+  monthly: '流月 / 月计',
+  daily: '流日 / 日计',
+  hourly: '流时 / 时计',
+  event: '当前事项',
+  'date-range': '日期范围',
+  cycle: '周期层级',
+  custom: '自定义范围',
+};
+
 function isTimeBasedDivinationDraft(draft: DivinationDraft) {
   if (draft.method === 'liuyao' || draft.method === 'qimen' || draft.method === 'liuren') {
     return true;
@@ -155,6 +176,88 @@ interface DivinationFormProps {
   questionInputRef: React.RefObject<HTMLTextAreaElement | null>;
   cases?: PersonalHistoryRecord[];
   showHeading?: boolean;
+}
+
+function PromptSelectionFields({
+  draft,
+  updateDraft,
+}: Pick<DivinationFormProps, 'draft' | 'updateDraft'>) {
+  if (draft.method === 'ssgw') return null;
+  const methodId = draft.method === 'huangji' ? 'huangji-jingshi' : draft.method;
+  const capability = getPromptMethodCapability(methodId);
+  const topicOptions = getPromptTopicOptions(methodId);
+  const topicId = topicOptions.some((item) => item.id === draft.promptTopicId)
+    ? draft.promptTopicId!
+    : (topicOptions[0]?.id ?? 'general');
+  const subtopicOptions = getPromptSubtopicOptions(topicId, methodId);
+  const selectedSubtopic = subtopicOptions.some((item) => item.id === draft.promptSubtopicId)
+    ? draft.promptSubtopicId!
+    : '';
+  const scopeOptions = (capability?.scopeIds ?? []).map((value) => ({
+    value,
+    label: PROMPT_SCOPE_LABELS[value] ?? value,
+  }));
+  const selectedScope = scopeOptions.some((item) => item.value === draft.promptScope)
+    ? draft.promptScope!
+    : (capability?.defaultScope ?? scopeOptions[0]?.value ?? 'event');
+  const topicSelectOptions = topicOptions.map((item) => ({ value: item.id, label: item.label }));
+  const subtopicSelectOptions = subtopicOptions.map((item) => ({
+    value: item.id,
+    label: item.label,
+  }));
+
+  return (
+    <div className="divination-prompt-selection">
+      <div className="divination-prompt-selection-head">
+        <span>解读方法</span>
+        <strong>
+          {capability?.categoryLabel ?? '占问'} · {capability?.methodLabel ?? methodId}
+        </strong>
+      </div>
+      <div className="divination-prompt-selection-grid">
+        <div className="form-item">
+          <label htmlFor="divination-prompt-topic-select">解读主题</label>
+          <div className="divination-select-shell">
+            <DropdownSelect
+              id="divination-prompt-topic-select"
+              value={topicId}
+              options={topicSelectOptions}
+              onChange={(value) => {
+                updateDraft('promptTopicId', value);
+                updateDraft('promptSubtopicId', undefined);
+              }}
+            />
+          </div>
+        </div>
+        {subtopicOptions.length ? (
+          <div className="form-item">
+            <label htmlFor="divination-prompt-subtopic-select">主题细项</label>
+            <div className="divination-select-shell">
+              <DropdownSelect
+                id="divination-prompt-subtopic-select"
+                value={selectedSubtopic}
+                options={[{ value: '', label: '不限定' }, ...subtopicSelectOptions]}
+                onChange={(value) => updateDraft('promptSubtopicId', value || undefined)}
+              />
+            </div>
+          </div>
+        ) : null}
+        {scopeOptions.length > 1 ? (
+          <div className="form-item">
+            <label htmlFor="divination-prompt-scope-select">分析范围</label>
+            <div className="divination-select-shell">
+              <DropdownSelect
+                id="divination-prompt-scope-select"
+                value={selectedScope}
+                options={scopeOptions}
+                onChange={(value) => updateDraft('promptScope', value)}
+              />
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
 }
 
 export function DivinationForm({
@@ -222,6 +325,8 @@ export function DivinationForm({
   );
   const ssgwMethod = draft.ssgwMethod ?? 'random';
   const ssgwNumber = draft.ssgwNumber ?? '';
+  const kongmingMethod = draft.kongmingMethod ?? 'random';
+  const kongmingPattern = draft.kongmingPattern ?? '';
   const isManualInputIncomplete =
     (draft.method === 'liuyao' &&
       ((liuyaoMethod === 'manual' && liuyaoYaos.length !== 6) ||
@@ -234,7 +339,10 @@ export function DivinationForm({
       lenormandInteractiveCards.length !== lenormandSpread.positions.length) ||
     (draft.method === 'ssgw' &&
       ssgwMethod === 'manual' &&
-      (!/^\d+$/.test(ssgwNumber) || Number(ssgwNumber) < 1 || Number(ssgwNumber) > 92));
+      (!/^\d+$/.test(ssgwNumber) || Number(ssgwNumber) < 1 || Number(ssgwNumber) > 92)) ||
+    (draft.method === 'kongming' &&
+      kongmingMethod === 'manual' &&
+      !/^[●○]{5}$/.test(kongmingPattern));
   const supplementaryInfoCount = isAlmanac
     ? Number(Boolean(draft.question.trim()))
     : DIVINATION_SUPPLEMENTARY_INFO_FIELDS.reduce(
@@ -321,6 +429,13 @@ export function DivinationForm({
     updateDraft('lenormandInteractiveSamples', []);
   }
 
+  function updateMethod(value: DivinationDraft['method']) {
+    updateDraft('method', value);
+    updateDraft('promptTopicId', undefined);
+    updateDraft('promptSubtopicId', undefined);
+    updateDraft('promptScope', undefined);
+  }
+
   if (isAlmanac) {
     return (
       <>
@@ -338,7 +453,7 @@ export function DivinationForm({
                   key={item.value}
                   type="button"
                   className={`divination-method-btn ${draft.method === item.value ? 'is-active' : ''}`}
-                  onClick={() => updateDraft('method', item.value)}
+                  onClick={() => updateMethod(item.value)}
                 >
                   <strong>{item.label}</strong>
                   <span>{item.description}</span>
@@ -346,6 +461,8 @@ export function DivinationForm({
               ))}
             </div>
           ) : null}
+
+          <PromptSelectionFields draft={draft} updateDraft={updateDraft} />
 
           <AlmanacForm
             draft={draft}
@@ -390,7 +507,7 @@ export function DivinationForm({
                 key={item.value}
                 type="button"
                 className={`divination-method-btn ${draft.method === item.value ? 'is-active' : ''}`}
-                onClick={() => updateDraft('method', item.value)}
+                onClick={() => updateMethod(item.value)}
               >
                 <strong>{item.label}</strong>
                 <span>{item.description}</span>
@@ -398,6 +515,8 @@ export function DivinationForm({
             ))}
           </div>
         ) : null}
+
+        <PromptSelectionFields draft={draft} updateDraft={updateDraft} />
 
         <div className="person-info-form">
           <div className="form-row">
@@ -435,6 +554,24 @@ export function DivinationForm({
                       </div>
                     ) : null}
 
+                    {draft.method === 'xiaoliuren' ? (
+                      <div className="form-item divination-inline-field">
+                        <label htmlFor="xiaoliuren-rule-select">起课口径</label>
+                        <div className="divination-select-shell divination-desktop-select-shell">
+                          <DropdownSelect
+                            id="xiaoliuren-rule-select"
+                            value={draft.xiaoliurenRule ?? 'common'}
+                            options={XIAOLIUREN_RULE_OPTIONS}
+                            onChange={(value) =>
+                              updateDraft(
+                                'xiaoliurenRule',
+                                value as DivinationDraft['xiaoliurenRule'],
+                              )
+                            }
+                          />
+                        </div>
+                      </div>
+                    ) : null}
                     {draft.method === 'jinkoujue' ? (
                       <div className="form-item divination-inline-field">
                         <label htmlFor="jinkoujue-method-select">起课方式</label>
@@ -672,9 +809,7 @@ export function DivinationForm({
                       value={draft.method}
                       options={GENERAL_DIVINATION_METHOD_OPTIONS}
                       ariaLabel="占卜类型"
-                      onChange={(value) =>
-                        updateDraft('method', value as DivinationDraft['method'])
-                      }
+                      onChange={(value) => updateMethod(value as DivinationDraft['method'])}
                     />
                   </div>
                 ) : null}
@@ -692,6 +827,18 @@ export function DivinationForm({
                   </div>
                 ) : null}
 
+                {draft.method === 'xiaoliuren' ? (
+                  <div className="divination-mobile-secondary-picker">
+                    <DropdownSelect
+                      value={draft.xiaoliurenRule ?? 'common'}
+                      options={XIAOLIUREN_RULE_OPTIONS}
+                      ariaLabel="小六壬起课口径"
+                      onChange={(value) =>
+                        updateDraft('xiaoliurenRule', value as DivinationDraft['xiaoliurenRule'])
+                      }
+                    />
+                  </div>
+                ) : null}
                 {draft.method === 'jinkoujue' ? (
                   <div className="divination-mobile-secondary-picker">
                     <DropdownSelect
@@ -1123,6 +1270,94 @@ export function DivinationForm({
                   />
                 </div>
               ) : null}
+            </div>
+          ) : null}
+
+          {draft.method === 'zhuge' ? (
+            <div className="divination-extra-panel manual-entry-panel">
+              <div className="form-item">
+                <label htmlFor="zhuge-text-input">随念写下三个汉字</label>
+                <input
+                  id="zhuge-text-input"
+                  type="text"
+                  className="form-input"
+                  placeholder="例如 定乾坤"
+                  value={draft.zhugeText}
+                  onChange={(event) => updateDraft('zhugeText', event.target.value)}
+                />
+                <small className="workspace-ui-field-hint">
+                  依三个字的康熙笔画取末位数，合成签序。
+                </small>
+              </div>
+            </div>
+          ) : null}
+
+          {draft.method === 'kongming' ? (
+            <div className="divination-extra-panel manual-entry-panel">
+              <div className="manual-mode-switch" role="group" aria-label="孔明神卦起卦方式">
+                <button
+                  type="button"
+                  className={kongmingMethod === 'random' ? 'is-active' : ''}
+                  onClick={() => updateDraft('kongmingMethod', 'random')}
+                >
+                  自动起卦
+                </button>
+                <button
+                  type="button"
+                  className={kongmingMethod === 'manual' ? 'is-active' : ''}
+                  onClick={() => {
+                    updateDraft('kongmingMethod', 'manual');
+                    if (kongmingMethod !== 'manual') updateDraft('kongmingPattern', '-----');
+                  }}
+                >
+                  手动取象
+                </button>
+              </div>
+              {kongmingMethod === 'manual' ? (
+                <>
+                  <div className="culture-coins" aria-label="五枚硬币的正反面">
+                    {[0, 1, 2, 3, 4].map((index) => {
+                      const selected = kongmingPattern[index];
+                      return (
+                        <fieldset key={index} className="culture-coin-entry">
+                          <legend>第{index + 1}枚</legend>
+                          <div className="culture-coin-options">
+                            {(
+                              [
+                                ['●', '正面', '阳'],
+                                ['○', '反面', '阴'],
+                              ] as const
+                            ).map(([symbol, face, polarity]) => (
+                              <button
+                                key={symbol}
+                                type="button"
+                                className={selected === symbol ? 'is-active' : ''}
+                                aria-pressed={selected === symbol}
+                                aria-label={`第${index + 1}枚，${face}，${polarity}`}
+                                onClick={() => {
+                                  const next = [...kongmingPattern.padEnd(5, '-').slice(0, 5)];
+                                  next[index] = symbol;
+                                  updateDraft('kongmingPattern', next.join(''));
+                                }}
+                              >
+                                <strong>{face}</strong>
+                                <small>{polarity}</small>
+                              </button>
+                            ))}
+                          </div>
+                        </fieldset>
+                      );
+                    })}
+                  </div>
+                  <small className="workspace-ui-field-hint">
+                    摇出五枚硬币后，按摆放顺序逐枚记录；正面为阳，反面为阴。
+                  </small>
+                </>
+              ) : (
+                <small className="workspace-ui-field-hint">
+                  系统独立取得五枚硬币的阴阳结果并组成卦象。
+                </small>
+              )}
             </div>
           ) : null}
 

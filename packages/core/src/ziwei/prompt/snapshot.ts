@@ -10,7 +10,13 @@ import {
 } from './builders';
 import { formatKeyValueBlock, formatObjectList } from './formatters';
 import { formatPalaceName, mapZiweiScopeLabel, mapZiweiTopicLabel } from './labels';
-import { getPalaceByIndex } from '../iztro/palace-helpers';
+import {
+  getBodyPalace,
+  getBodyPalaceAxisSummary,
+  getOppositePalace,
+  getPalaceByIndex,
+  getPalaceByName,
+} from '../iztro/palace-helpers';
 import type { ZiweiPromptContext } from './types';
 
 function buildTaskBookAnalysisObject(payload: AnalysisPayloadV1) {
@@ -30,12 +36,24 @@ function buildTaskBookAnalysisObject(payload: AnalysisPayloadV1) {
             : `${item.star}化${item.mutagen}`,
         )
       : undefined,
+    对宫冲照: (() => {
+      const jiItem = currentMutagens.find((item) => item.mutagen === '忌');
+      if (!jiItem || !jiItem.palace_name) return undefined;
+      const targetPalace = getPalaceByName(payload, jiItem.palace_name);
+      if (!targetPalace) return undefined;
+      const opposite = getOppositePalace(payload, targetPalace);
+      return opposite
+        ? `${jiItem.star}化忌入${formatPalaceName(targetPalace.name)}，直冲对宫${formatPalaceName(opposite.name)}`
+        : undefined;
+    })(),
   };
 }
 
 function buildTaskBookBasicInfo(payload: AnalysisPayloadV1) {
   const fourPillars = payload.basic_info.four_pillars;
   const hiddenPalaces = payload.basic_info.hidden_palaces;
+  const bodyPalace = getBodyPalace(payload);
+  const bodyPalaceName = hiddenPalaces?.body_palace_name || bodyPalace?.name;
   return {
     阳历生日: payload.basic_info.solar_date,
     农历生日: payload.basic_info.lunar_date,
@@ -46,9 +64,8 @@ function buildTaskBookBasicInfo(payload: AnalysisPayloadV1) {
     命主: payload.basic_info.soul,
     身主: payload.basic_info.body,
     五行局: payload.basic_info.five_elements_class,
-    身宫: hiddenPalaces?.body_palace_name
-      ? formatPalaceName(hiddenPalaces.body_palace_name)
-      : undefined,
+    身宫: bodyPalaceName ? formatPalaceName(bodyPalaceName) : undefined,
+    命身主轴: getBodyPalaceAxisSummary(bodyPalaceName),
     来因宫: hiddenPalaces?.original_palace_name
       ? formatPalaceName(hiddenPalaces.original_palace_name)
       : undefined,
@@ -81,7 +98,7 @@ export function buildPromptContextSnapshot(params: {
 }) {
   const { payload, reportContext } = params;
   const focusTaskBundle = buildFocusTaskBundle(payload, reportContext);
-  const focusPalaces = focusTaskBundle.focusPalaces.slice(0, 4);
+  const focusPalaces = focusTaskBundle.focusPalaces.slice(0, 8);
   const currentPalace = getPalaceByIndex(payload, payload.active_scope.palace_index);
   const currentMutagens = payload.active_scope.mutagen_map ?? [];
   const isOrigin = payload.active_scope.scope === 'origin';
@@ -115,7 +132,7 @@ export function buildZiweiReadableSnapshot(params: {
   const focusPalaces = buildFocusTaskBundle(
     params.payload,
     params.reportContext,
-  ).focusPalaces.slice(0, 4);
+  ).focusPalaces.slice(0, 8);
   const patternSection = snapshot.命盘格局.length
     ? ['', '【命盘格局】', formatObjectList(snapshot.命盘格局)]
     : [];
@@ -138,8 +155,8 @@ export function buildZiweiReadableSnapshot(params: {
     '【分析对象】',
     formatKeyValueBlock(snapshot.当前运限信息),
     ...patternSection,
-    ['', '【运限资料】', yunxianBody || '- 无'],
-    ['', '【运限重点】', yunxianFocus.length ? yunxianFocus.join('\n') : '- 无'],
+    ['', '【运限资料】', yunxianBody || '无'],
+    ['', '【运限重点】', yunxianFocus.length ? yunxianFocus.join('\n') : '无'],
     evidenceBody ? ['', '【关键判断线索】', evidenceBody] : '',
     focusBody ? ['', '【重点宫位资料】', focusBody] : '',
     palaceBody ? ['', '【十二宫资料】', palaceBody] : '',
@@ -155,7 +172,7 @@ export function buildZiweiTaskBookSnapshot(params: {
 }) {
   const { payload, reportContext } = params;
   const focusTaskBundle = buildFocusTaskBundle(payload, reportContext);
-  const focusPalaces = focusTaskBundle.focusPalaces.slice(0, 4);
+  const focusPalaces = focusTaskBundle.focusPalaces.slice(0, 8);
   const isOrigin = payload.active_scope.scope === 'origin';
   const patternSummary = buildPatternSummary(payload);
   const yunxianFocus = buildScopeHitSummary(payload);
@@ -172,13 +189,15 @@ export function buildZiweiTaskBookSnapshot(params: {
     '',
     '【分析对象】',
     formatKeyValueBlock(buildTaskBookAnalysisObject(payload)),
-    ...(isOrigin
-      ? []
-      : ['', '【运限重点】', yunxianFocus.length ? yunxianFocus.join('\n') : '- 无']),
+    ...(isOrigin ? [] : ['', '【运限重点】', yunxianFocus.length ? yunxianFocus.join('\n') : '无']),
     ...(patternSummary.length ? ['', '【命盘格局】', formatObjectList(patternSummary)] : []),
     ...(evidenceBody ? ['', '【关键判断线索】', evidenceBody] : []),
     ...(formatObjectList(focusBody) ? ['', '【重点宫位资料】', formatObjectList(focusBody)] : []),
+    ...(formatObjectList(buildPalaceIndex(payload))
+      ? ['', '【全盘十二宫总览】', formatObjectList(buildPalaceIndex(payload))]
+      : []),
   ];
+
   return sections
     .flat()
     .filter((line): line is string => typeof line === 'string')

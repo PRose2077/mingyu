@@ -1,4 +1,5 @@
 import type { AstrolabeData, AstrolabeSynastryData } from '../types/divination';
+import { formatAstrolabeAspectSections } from '../divination/astrolabe-chart-facts';
 import { formatPromptCurrentTime } from './current-time';
 import { buildPromptGuidance, buildPromptTask } from './guidance';
 import { buildPromptSchoolSection } from './schools';
@@ -9,6 +10,11 @@ import {
   joinPromptSections,
 } from './sections';
 import type { PromptBuildOptions, PromptDocument } from './types';
+import {
+  buildPromptSelectionTask,
+  getPromptSelectionSection,
+  type PromptSelection,
+} from './framework';
 
 export const ASTROLABE_PROMPT_TOPICS = [
   'life',
@@ -69,21 +75,18 @@ const TOPIC_LABELS: Record<AstrolabePromptTopic, string> = {
 };
 
 function formatPoint(point: AstrolabeData['planets'][number]) {
-  return `${point.label}${point.formatted}，第${point.house}宫${point.retrograde ? '，逆行' : ''}`;
+  const dignity = point.dignityLabel ? `，${point.dignityLabel}` : '';
+  return `${point.label}${point.formatted}，第${point.house}宫${point.retrograde ? '，逆行' : ''}${dignity}`;
 }
 
 export function formatAstrolabeForPrompt(data: AstrolabeData) {
   const sun = data.planets.find((item) => item.name === 'Sun');
   const moon = data.planets.find((item) => item.name === 'Moon');
   const ascendant = data.angles.find((item) => item.name === 'Ascendant');
-  const aspects = data.aspects
-    .slice(0, 6)
-    .map(
-      (item) =>
-        `${item.body1}${item.symbol}${item.body2}（${item.type}，容许度${item.orb.toFixed(2)}°，${item.closeness ?? '未分级'}）`,
-    );
   return [
     `出生信息：${data.birth.name}；${data.birth.gender || '性别未填'}；${data.birth.dateTime}；位置${data.birth.location}；时区UTC${data.birth.timezone >= 0 ? '+' : ''}${data.birth.timezone}`,
+    data.houseSystem ? `宫位制：${data.houseSystem === 'whole_sign' ? '整宫制' : 'Placidus'}` : '',
+    ...(data.ephemerisWarnings ?? []).map((warning) => `星历精度：${warning}`),
     data.birth.isTrueSolarTime
       ? `出生时间校正：当地钟表时间${data.birth.standardDateTime || '未记录'}；真太阳时${data.birth.trueSolarDateTime || data.birth.dateTime}`
       : '',
@@ -100,10 +103,10 @@ export function formatAstrolabeForPrompt(data: AstrolabeData) {
     }`,
     `逆行：${formatStringList(data.summary.retrograde, '无')}`,
     `格局：${formatStringList(data.summary.patterns, '未列明显格局')}`,
+    ...data.angles.map((point) => `${point.label}：${point.formatted}`),
     '星体位置：',
-    ...data.planets.map((item) => `- ${formatPoint(item)}`),
-    aspects.length ? '相位明细：' : '',
-    ...aspects.map((item) => `- ${item}`),
+    ...data.planets.map((item) => `  ${formatPoint(item)}`),
+    ...formatAstrolabeAspectSections(data.aspects, [...data.planets, ...data.angles]),
   ]
     .filter(Boolean)
     .join('\n');
@@ -113,22 +116,27 @@ export interface AstrolabePromptOptions extends PromptBuildOptions {
   chart: AstrolabeData;
   schools?: readonly string[];
   topic?: AstrolabePromptTopic;
+  selection?: PromptSelection;
 }
 
 export function buildAstrolabePromptDocument(options: AstrolabePromptOptions): PromptDocument {
   const topic = options.topic ?? 'life';
   const question = options.question?.trim() || `请围绕${TOPIC_LABELS[topic]}解读这份星盘。`;
+  const task = buildPromptTask(
+    `请依据星体、宫位、相位和盘面证据，重点分析${TOPIC_LABELS[topic]}并回答问题。`,
+    'astrolabe',
+  );
   const user = joinPromptSections([
     buildPromptGuidance('astrolabe'),
     buildPromptSection('当前时间', formatPromptCurrentTime(options.currentTime)),
     buildPromptSection('星盘资料', formatAstrolabeForPrompt(options.chart)),
     buildPromptSchoolSection('astrolabe', options.schools),
+    options.selection
+      ? buildPromptSection('解读选择', getPromptSelectionSection(options.selection))
+      : '',
     buildPromptSection(
       '任务',
-      buildPromptTask(
-        `请依据星体、宫位、相位和盘面证据，重点分析${TOPIC_LABELS[topic]}并回答问题。`,
-        'astrolabe',
-      ),
+      options.selection ? buildPromptSelectionTask(task, options.selection) : task,
     ),
     buildPromptSection('问题', question),
   ]);
@@ -139,15 +147,27 @@ export function buildAstrolabePrompt(options: AstrolabePromptOptions) {
   return buildAstrolabePromptDocument(options).text;
 }
 
-function formatSynastryFacts(data: AstrolabeSynastryData) {
+function formatSynastryFacts(
+  data: AstrolabeSynastryData,
+  chart1: AstrolabeData,
+  chart2: AstrolabeData,
+) {
+  const position = (chart: AstrolabeData, name: string) => {
+    const point = [...chart.planets, ...chart.angles].find((item) => item.name === name);
+    return point
+      ? `（${point.formatted}${point.house > 0 ? `，自身本命第${point.house}宫` : ''}）`
+      : '';
+  };
   const aspects = data.aspects.map(
     (item) =>
-      `- ${item.person1}${item.point1Name}与${item.person2}${item.point2Name}：${item.type}，实际夹角${item.actualAngle.toFixed(2)}°，容许度${item.orb.toFixed(2)}°，${item.closeness}。`,
+      `  第一人${item.person1}的${item.point1}${position(chart1, item.point1Name)}与第二人${item.person2}的${item.point2}${position(chart2, item.point2Name)}：${item.type}，目标角${item.exactAngle}°，实际夹角${item.actualAngle.toFixed(2)}°，偏差${item.orb.toFixed(2)}°，容许偏差上限${item.allowedOrb}°，${item.closeness}。`,
   );
   const overlays = data.houseOverlays.map(
-    (item) => `- ${item.visitor}${item.pointName}落入${item.owner}本命盘第${item.house}宫。`,
+    (item) =>
+      `  ${item.visitorPerson === 'person1' ? '第一人' : '第二人'}${item.visitor}的${item.point}${position(item.visitorPerson === 'person1' ? chart1 : chart2, item.pointName)}落入${item.ownerPerson === 'person1' ? '第一人' : '第二人'}${item.owner}的本命盘第${item.house}宫。`,
   );
   return [
+    data.receptionSummary ?? '',
     aspects.length ? `【跨盘相位】\n${aspects.join('\n')}` : '',
     overlays.length ? `【跨盘落宫】\n${overlays.join('\n')}` : '',
   ]
@@ -160,6 +180,7 @@ export interface AstrolabeSynastryPromptOptions extends PromptBuildOptions {
   chart2: AstrolabeData;
   synastry: AstrolabeSynastryData;
   schools?: readonly string[];
+  selection?: PromptSelection;
 }
 
 export function buildAstrolabeSynastryPromptDocument(
@@ -167,19 +188,26 @@ export function buildAstrolabeSynastryPromptDocument(
 ): PromptDocument {
   const question =
     options.question?.trim() || '请分析双方互动主轴、互补点、张力点与需要结合现实核对的部分。';
+  const task = buildPromptTask(
+    '请依据双方本命盘、跨盘相位和跨盘落宫，分析互动主轴、互补点与张力点，并列出各自对应证据，再回答问题。',
+    'astrolabe-synastry',
+  );
   const user = joinPromptSections([
     buildPromptGuidance('astrolabe-synastry'),
     buildPromptSection('当前时间', formatPromptCurrentTime(options.currentTime)),
     buildPromptSection('第一人本命盘', formatAstrolabeForPrompt(options.chart1)),
     buildPromptSection('第二人本命盘', formatAstrolabeForPrompt(options.chart2)),
-    buildPromptSection('跨盘资料', formatSynastryFacts(options.synastry)),
+    buildPromptSection(
+      '跨盘资料',
+      formatSynastryFacts(options.synastry, options.chart1, options.chart2),
+    ),
     buildPromptSchoolSection('astrolabe', options.schools),
+    options.selection
+      ? buildPromptSection('解读选择', getPromptSelectionSection(options.selection))
+      : '',
     buildPromptSection(
       '任务',
-      buildPromptTask(
-        '请依据双方本命盘、跨盘相位和跨盘落宫，分析互动主轴、互补点与张力点，并列出各自对应证据，再回答问题。',
-        'astrolabe-synastry',
-      ),
+      options.selection ? buildPromptSelectionTask(task, options.selection) : task,
     ),
     buildPromptSection('问题', question),
   ]);

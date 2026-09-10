@@ -10,6 +10,7 @@ import {
 } from '../divination/config';
 import { MINGYU_CORE_VERSION, MINGYU_SCHEMA_VERSION } from '../shared/version';
 import { MingyuCoreError } from '../shared/result';
+import { getPromptMethodCapability, type PromptMethodCapability } from '../prompt/framework';
 
 export { MINGYU_CORE_VERSION, MINGYU_SCHEMA_VERSION } from '../shared/version';
 
@@ -41,6 +42,12 @@ export const SYSTEM_CAPABILITY_IDS = [
   'qizheng',
   'xuankong',
   'residential',
+  'name.chineseAnalysis',
+  'name.generation',
+  'name.characterQuery',
+  'name.numberEnergy',
+  'name.zhugeDivination',
+  'name.kongmingDivination',
 ] as const;
 
 export type SystemCapabilityId = (typeof SYSTEM_CAPABILITY_IDS)[number];
@@ -84,6 +91,8 @@ export interface SystemCapability {
   };
   optionalDependencies?: string[];
   notes?: string[];
+  /** 提示词双层选择能力；算法计算与解读主题保持正交。 */
+  prompt?: PromptMethodCapability;
 }
 
 export interface MingyuCapabilities {
@@ -987,7 +996,7 @@ const systems: SystemCapability[] = [
       batch: false,
     },
     notes: [
-      '年计采用积年与阳遁七十二局立成；月、日、时计采用现代历法定位复现通行四计，时计按冬夏至分阴阳遁。',
+      '年计采用积年与阳遁七十二局立成；月计按逐月节气换局，日、时计采用现代历法定位，时计按冬夏至分阴阳遁。',
       '月、日、时计不等同于逐项复原古籍历法常数、小余和气应链；结果会保留这一口径边界。',
     ],
   },
@@ -1112,6 +1121,7 @@ const systems: SystemCapability[] = [
       '命身十二宫',
       '宿度与庙旺',
       '吊照相位',
+      '行限与流曜',
       '位置来源与精度分层',
       '月相与出生时刻光照',
       '结构化证据',
@@ -1127,6 +1137,7 @@ const systems: SystemCapability[] = [
     },
     notes: [
       '七政、罗睺、计都与月孛采用现代天文位置；紫炁采用《七政算内篇》古法均速模型，结果明确区分精度层级。',
+      '传入性别与流年后才生成行限、流曜；不传流年时只排出生时点静态盘。',
       '二十八宿以SIMBAD距星J2000坐标、自行和目标日期黄道转换形成真实宿界；真太阳时只校正传统命身十二宫，不改变现代天体计算时刻。',
     ],
   },
@@ -1183,6 +1194,8 @@ const systems: SystemCapability[] = [
       '运盘',
       '山盘',
       '向盘',
+      '流年飞星',
+      '流月飞星',
       '局型',
       '组合互参',
       '到山到向',
@@ -1197,6 +1210,7 @@ const systems: SystemCapability[] = [
     },
     notes: [
       '玄空飞星输出可复现的下卦三盘、局型、组合与证据，不覆盖形峦、玄空大卦或替卦口诀。',
+      '传入流年后叠加三元紫白流年飞星；再传入流月则叠加节气月紫白。',
       '度数落在二十四山边界附近时会返回候选山向与测量警告，但仍按下卦分别计算。',
     ],
   },
@@ -1294,6 +1308,158 @@ const systems: SystemCapability[] = [
       '至少提供山向/门向度数，或居住人出生年与性别/命卦之一；玄空宅运层还必须提供住宅建造年或起运年，缺年时不得用当前年份代替。底层 bazhai 与 xuankong 能力仍保留。',
     ],
   },
+  {
+    id: 'name.chineseAnalysis',
+    name: '姓名分析',
+    category: 'chart',
+    inputs: [
+      { id: 'fullName', label: '姓名', type: 'text', required: true },
+      {
+        id: 'surnameLength',
+        label: '姓氏字数',
+        type: 'select',
+        required: false,
+        options: options([
+          { value: '1', label: '单姓' },
+          { value: '2', label: '复姓' },
+        ]),
+      },
+      { id: 'birth', label: '出生资料', type: 'object', required: false },
+      { id: 'question', label: '问题', type: 'text', required: false },
+    ],
+    outputs: ['五格剖象', '三才配置', '姓名学笔画', '生辰取用上下文', '结构分析任务书'],
+    supports: {
+      seed: false,
+      customRandomSource: false,
+      trueSolarTime: true,
+      birthTimeRequired: false,
+      batch: false,
+    },
+    notes: ['未收录用字会明确报错，不默认按零画计算；出生资料中的喜用五行自动进入分析。'],
+  },
+  {
+    id: 'name.generation',
+    name: '起名候选',
+    category: 'chart',
+    inputs: [
+      { id: 'surname', label: '姓氏', type: 'text', required: true },
+      {
+        id: 'gender',
+        label: '性别倾向',
+        type: 'select',
+        required: false,
+        options: options([
+          { value: 'male', label: '男' },
+          { value: 'female', label: '女' },
+          { value: '通用', label: '通用' },
+        ]),
+      },
+      {
+        id: 'givenNameLength',
+        label: '名字字数',
+        type: 'select',
+        required: false,
+        options: options([
+          { value: '1', label: '一字' },
+          { value: '2', label: '二字' },
+        ]),
+      },
+      { id: 'preferredCharacters', label: '偏好用字', type: 'text', required: false },
+      { id: 'forbiddenCharacters', label: '忌用字', type: 'text', required: false },
+      { id: 'generationCharacter', label: '辈分字', type: 'text', required: false },
+      { id: 'birth', label: '出生资料', type: 'object', required: false },
+      { id: 'limit', label: '候选数量上限', type: 'number', required: false },
+    ],
+    outputs: ['候选姓名列表', '逐候选五格与三才', '选字依据', '结构分析任务书'],
+    supports: {
+      seed: false,
+      customRandomSource: false,
+      trueSolarTime: true,
+      birthTimeRequired: false,
+      batch: false,
+    },
+    notes: ['姓氏用字需全部收录，否则明确报错；候选分析异常不与“无可用候选”混同。'],
+  },
+  {
+    id: 'name.characterQuery',
+    name: '汉字查询',
+    category: 'chart',
+    inputs: [{ id: 'text', label: '汉字文本', type: 'text', required: true }],
+    outputs: ['简繁字形', '姓名学康熙笔画', '部首结构', '字义', '康熙原文（收录时）'],
+    supports: {
+      seed: false,
+      customRandomSource: false,
+      trueSolarTime: false,
+      birthTimeRequired: false,
+      batch: false,
+    },
+    notes: ['康熙原文缺失时按缺文返回，不使用其他字的条目代替；繁简映射按当前生成资料口径。'],
+  },
+  {
+    id: 'name.numberEnergy',
+    name: '数字能量',
+    category: 'chart',
+    inputs: [
+      { id: 'number', label: '号码或数字串', type: 'text', required: true },
+      {
+        id: 'purpose',
+        label: '用途',
+        type: 'select',
+        required: false,
+        options: options([
+          { value: 'general', label: '综合' },
+          { value: 'phone', label: '手机号' },
+          { value: 'plate', label: '车牌' },
+        ]),
+      },
+    ],
+    outputs: ['八星配对轨迹', '夹数修饰', '磁场分布', '大取数与余数', '结构化说明'],
+    supports: {
+      seed: false,
+      customRandomSource: false,
+      trueSolarTime: false,
+      birthTimeRequired: false,
+      batch: false,
+    },
+    notes: ['八星配对复用公共八宅表，号码取象为民俗借用约定；字母按 A=1 至 Z=26 展开计入。'],
+  },
+  {
+    id: 'name.zhugeDivination',
+    name: '诸葛神数',
+    category: 'divination',
+    inputs: [
+      { id: 'text', label: '三个汉字', type: 'text', required: true },
+      { id: 'question', label: '问题', type: 'text', required: false },
+    ],
+    outputs: ['策数', '签号', '签诗', '吉凶', '解签'],
+    supports: {
+      seed: false,
+      customRandomSource: false,
+      trueSolarTime: false,
+      birthTimeRequired: false,
+      batch: false,
+    },
+    notes: ['需恰好三个已收录汉字，逐字笔画取个位组成三位数对 384 取余；任一未收录字直接报错。'],
+  },
+  {
+    id: 'name.kongmingDivination',
+    name: '孔明神卦',
+    category: 'divination',
+    inputs: [
+      { id: 'pattern', label: '指定五位阴阳图案', type: 'text', required: false },
+      { id: 'question', label: '问题', type: 'text', required: false },
+    ],
+    outputs: ['五位图案', '卦题', '等级', '卦诗', '解释'],
+    supports: {
+      seed: true,
+      customRandomSource: true,
+      replay: true,
+      trueSolarTime: false,
+      birthTimeRequired: false,
+      batch: false,
+    },
+    notes: ['支持随机起卦或指定图案，二者互斥；32 种阴阳组合逐表查号，非六爻卦算法。'],
+  },
 ];
 
 /** 返回可安全序列化的能力清单，供网站、App、API 或 MCP 自动生成入口。 */
@@ -1302,13 +1468,18 @@ export function getCapabilities(): MingyuCapabilities {
     package: 'mingyu-core',
     version: MINGYU_CORE_VERSION,
     schemaVersion: MINGYU_SCHEMA_VERSION,
-    systems: structuredClone(systems),
+    systems: systems.map((system) => {
+      const prompt = getPromptMethodCapability(system.id);
+      return prompt ? { ...structuredClone(system), prompt } : structuredClone(system);
+    }),
   };
 }
 
 export function getSystemCapability(id: string): SystemCapability | undefined {
   const capability = systems.find((item) => item.id === id);
-  return capability ? structuredClone(capability) : undefined;
+  if (!capability) return undefined;
+  const prompt = getPromptMethodCapability(capability.id);
+  return prompt ? { ...structuredClone(capability), prompt } : structuredClone(capability);
 }
 
 /** 查询必须存在的能力；适合客户端、API 和表单把未知 ID 转成明确错误。 */

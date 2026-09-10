@@ -97,9 +97,25 @@ function buildDraft(overrides: Partial<DivinationDraftInput>): DivinationDraftIn
     astrolabeLongitude: '116.4074',
     astrolabeTimezone: '8',
     taiyiYear: '2004',
+    zhugeText: '',
+    kongmingMethod: 'random',
+    kongmingPattern: '●○●○○',
     ...overrides,
   };
 }
+
+test('蓍草页面草稿生成六爻十八变及完整提示词', async () => {
+  const session = await generateDivinationSession(buildDraft({ liuyaoMethod: 'yarrow' }));
+  assert.equal(session.method, 'liuyao');
+  const data = session.data as ReturnType<typeof generateLiuyao>;
+  assert.equal(data.generation?.method, 'yarrow');
+  assert.equal(data.generation?.yarrow?.lines.length, 6);
+  assert.ok(data.generation?.yarrow?.lines.every((line) => line.changes.length === 3));
+  assert.match(session.prompt, /蓍草/);
+  assert.match(session.prompt, /第3变/);
+  const restored = JSON.parse(JSON.stringify(data));
+  assert.deepEqual(analyzeLiuyaoEvidence(restored), analyzeLiuyaoEvidence(data));
+});
 
 const qimenPalaceNameByGong: Record<number, string> = {
   1: '坎一宫',
@@ -1378,6 +1394,7 @@ test('奇门复合格局应按月将时支输出天三门地四户', () => {
 
   const zhengYueWuShiCombos = detectQimenPatternCombos({
     monthBranch: '寅',
+    actualSolarTerm: '雨水',
     hourBranch: '午',
     jiuGongGe,
   });
@@ -1395,6 +1412,7 @@ test('奇门复合格局应按月将时支输出天三门地四户', () => {
 
   const jiuYueSiShiCombos = detectQimenPatternCombos({
     monthBranch: '戌',
+    actualSolarTerm: '霜降',
     hourBranch: '巳',
     jiuGongGe,
   });
@@ -1413,6 +1431,7 @@ test('奇门复合格局应按月将时支输出天三门地四户', () => {
 
   const noHourBranch = detectQimenPatternCombos({
     monthBranch: '寅',
+    actualSolarTerm: '雨水',
     jiuGongGe,
   });
   assert.ok(!noHourBranch.some((combo) => combo.name === '天三门地四户'));
@@ -1424,6 +1443,7 @@ test('奇门复合格局应按月将贵人排十二天将输出地私门', () =>
   const yangNobleCombos = detectQimenPatternCombos({
     dayGanZhi: '甲辰',
     monthBranch: '寅',
+    actualSolarTerm: '雨水',
     hourBranch: '辰',
     jiuGongGe,
   });
@@ -1440,6 +1460,7 @@ test('奇门复合格局应按月将贵人排十二天将输出地私门', () =>
     dayStem: '甲',
     dayBranch: '午',
     monthBranch: '寅',
+    actualSolarTerm: '雨水',
     hourBranch: '辰',
     jiuGongGe,
   });
@@ -1453,6 +1474,7 @@ test('奇门复合格局应按月将贵人排十二天将输出地私门', () =>
 
   const noDay = detectQimenPatternCombos({
     monthBranch: '寅',
+    actualSolarTerm: '雨水',
     hourBranch: '辰',
     jiuGongGe,
   });
@@ -1468,6 +1490,7 @@ test('奇门复合格局应按月将贵人排十二天将输出地私门', () =>
   const noHourBranch = detectQimenPatternCombos({
     dayGanZhi: '甲辰',
     monthBranch: '寅',
+    actualSolarTerm: '雨水',
     jiuGongGe,
   });
   assert.ok(!noHourBranch.some((combo) => combo.name === '地私门'));
@@ -1478,6 +1501,7 @@ test('奇门复合格局应按月将时支输出太冲天马方', () => {
 
   const zhengYueZiShiCombos = detectQimenPatternCombos({
     monthBranch: '寅',
+    actualSolarTerm: '雨水',
     hourBranch: '子',
     jiuGongGe,
   });
@@ -1488,6 +1512,7 @@ test('奇门复合格局应按月将时支输出太冲天马方', () => {
 
   const zhengYueWuShiCombos = detectQimenPatternCombos({
     monthBranch: '寅',
+    actualSolarTerm: '雨水',
     hourBranch: '午',
     jiuGongGe,
   });
@@ -1502,6 +1527,7 @@ test('奇门复合格局应按月将时支输出太冲天马方', () => {
 
   const noHourBranch = detectQimenPatternCombos({
     monthBranch: '寅',
+    actualSolarTerm: '雨水',
     jiuGongGe,
   });
   assert.ok(!noHourBranch.some((combo) => combo.name === '天马方'));
@@ -1512,6 +1538,7 @@ test('奇门复合格局应按月将时支输出天罡斗星方', () => {
 
   const zhengYueWuShiCombos = detectQimenPatternCombos({
     monthBranch: '寅',
+    actualSolarTerm: '雨水',
     hourBranch: '午',
     jiuGongGe,
   });
@@ -1522,6 +1549,7 @@ test('奇门复合格局应按月将时支输出天罡斗星方', () => {
 
   const jiuYueSiShiCombos = detectQimenPatternCombos({
     monthBranch: '戌',
+    actualSolarTerm: '霜降',
     hourBranch: '巳',
     jiuGongGe,
   });
@@ -1537,6 +1565,7 @@ test('奇门复合格局应按月将时支输出天罡斗星方', () => {
 
   const noHourBranch = detectQimenPatternCombos({
     monthBranch: '寅',
+    actualSolarTerm: '雨水',
     jiuGongGe,
   });
   assert.ok(!noHourBranch.some((combo) => combo.name === '天罡时'));
@@ -1547,6 +1576,7 @@ test('奇门复合格局应按月将时支输出迷路法路向', () => {
 
   const mengCombos = detectQimenPatternCombos({
     monthBranch: '寅',
+    actualSolarTerm: '雨水',
     hourBranch: '午',
     jiuGongGe,
   });
@@ -1557,6 +1587,7 @@ test('奇门复合格局应按月将时支输出迷路法路向', () => {
 
   const zhongCombos = detectQimenPatternCombos({
     monthBranch: '戌',
+    actualSolarTerm: '霜降',
     hourBranch: '巳',
     jiuGongGe,
   });
@@ -1566,6 +1597,7 @@ test('奇门复合格局应按月将时支输出迷路法路向', () => {
 
   const jiCombos = detectQimenPatternCombos({
     monthBranch: '戌',
+    actualSolarTerm: '霜降',
     hourBranch: '午',
     jiuGongGe,
   });
@@ -1581,6 +1613,7 @@ test('奇门复合格局应按月将时支输出迷路法路向', () => {
 
   const noHourBranch = detectQimenPatternCombos({
     monthBranch: '寅',
+    actualSolarTerm: '雨水',
     jiuGongGe,
   });
   assert.ok(!noHourBranch.some((combo) => combo.name === '迷路法'));
@@ -1591,6 +1624,7 @@ test('奇门复合格局应按月将时支输出亭亭白奸方位', () => {
 
   const zhengYueWuShiCombos = detectQimenPatternCombos({
     monthBranch: '寅',
+    actualSolarTerm: '雨水',
     hourBranch: '午',
     jiuGongGe,
   });
@@ -1605,6 +1639,7 @@ test('奇门复合格局应按月将时支输出亭亭白奸方位', () => {
 
   const jiuYueSiShiCombos = detectQimenPatternCombos({
     monthBranch: '戌',
+    actualSolarTerm: '霜降',
     hourBranch: '巳',
     jiuGongGe,
   });
@@ -1624,6 +1659,7 @@ test('奇门复合格局应按月将时支输出亭亭白奸方位', () => {
 
   const noHourBranch = detectQimenPatternCombos({
     monthBranch: '寅',
+    actualSolarTerm: '雨水',
     jiuGongGe,
   });
   assert.ok(!noHourBranch.some((combo) => combo.name === '亭亭白奸'));
@@ -4077,6 +4113,21 @@ test('首页填写的补充信息会进入占问提示词', async () => {
   assert.match(session.prompt, /现实背景：已经拿到新工作的书面邀约，但需要在两周内答复。/);
 });
 
+test('首页临时档案补充的求测人性别与出生年份会进入占问提示词', async () => {
+  const session = await generateDivinationSession(
+    buildDraft({
+      method: 'liuyao',
+      gender: '女',
+      birthYear: '1998',
+      userSupplement: '已经拿到新工作的书面邀约，但需要在两周内答复。',
+    }),
+  );
+
+  assert.match(session.prompt, /【补充信息】/);
+  assert.match(session.prompt, /求测人：女；出生年份：1998/);
+  assert.match(session.prompt, /现实背景：已经拿到新工作的书面邀约，但需要在两周内答复。/);
+});
+
 test('太乙神数作为占卜方法应生成完整年计盘与时间层级提示', async () => {
   const session = await generateDivinationSession(
     buildDraft({
@@ -4379,6 +4430,43 @@ test('自定起卦时间缺少日期或时间时应明确提示', async () => {
   );
 });
 
+test('诸葛神数与孔明神卦进入统一占问会话并生成完整提示词', async () => {
+  const zhuge = await generateDivinationSession(
+    buildDraft({ method: 'zhuge', zhugeText: '顺其然' }),
+  );
+  assert.equal(zhuge.method, 'zhuge');
+  assert.match(zhuge.prompt, /【占卜信息】/);
+  assert.match(zhuge.prompt, /康熙笔画/);
+  assert.match(zhuge.prompt, /这件事接下来该怎么推进/);
+
+  const kongming = await generateDivinationSession(
+    buildDraft({
+      method: 'kongming',
+      kongmingMethod: 'manual',
+      kongmingPattern: '●○●○●',
+    }),
+  );
+  assert.equal(kongming.method, 'kongming');
+  assert.match(kongming.prompt, /孔明神卦/);
+  assert.match(kongming.prompt, /五枚硬币/);
+  assert.match(kongming.prompt, /●为正面、阳.*○为反面、阴/);
+  assert.match(kongming.prompt, /诗句取象：目下如冬树/);
+  assert.match(kongming.prompt, /基础解卦：/);
+  assert.match(kongming.prompt, /补充解释：/);
+
+  await assert.rejects(
+    () =>
+      generateDivinationSession(
+        buildDraft({
+          method: 'kongming',
+          kongmingMethod: 'manual',
+          kongmingPattern: '●○---',
+        }),
+      ),
+    /请完成五枚硬币的阴阳取象/,
+  );
+});
+
 test('占卜自定义问题保留资料与用户问题，并使用方法任务加通用短框架', async () => {
   const session = await generateDivinationSession(
     buildDraft({
@@ -4429,11 +4517,11 @@ test('黄历择日会结合可选事项、日期范围和多位出生信息生�
   assert.equal(session.method, 'almanac');
   assert.match(session.prompt, /占法：黄历择日/);
   assert.match(session.prompt, /核心结构：择日事项：搬家入宅/);
-  assert.doesNotMatch(session.prompt, /事项范围：|日期结论：|可用候选|慎用候选/);
+  assert.doesNotMatch(session.prompt, /事项范围：|日期结论：/);
   assert.match(session.prompt, /候选日期：2026-06-01 至 2026-06-05/);
   assert.match(session.prompt, /【问题】\n我们准备搬家，想选一个兼顾两个人的日子。/);
   assert.match(session.prompt, /候选日期明细：共5日/);
-  assert.equal(session.prompt.match(/- 第\d+日：2026-06-0[1-5]/g)?.length, 5);
+  assert.equal(session.prompt.match(/第\d+日：2026-06-0[1-5]/g)?.length, 5);
   assert.doesNotMatch(session.prompt, /原始宜项：|支持依据：|限制依据：|可用时辰：/);
   assert.doesNotMatch(session.prompt, /请依据候选日期.*给出首选日期/);
   assert.doesNotMatch(session.prompt, /结构化证据|证据汇总|计算链|解释限制|传统硬限制/);
@@ -4476,7 +4564,7 @@ test('黄历择日长区间提示词应携带全部 180 个候选日', async () 
 
   assert.ok('days' in session.data && session.data.days.length === 180);
   assert.match(session.prompt, /候选日期明细：共180日/);
-  assert.equal(session.prompt.match(/- 第\d+日：2026-/g)?.length, 180);
+  assert.equal(session.prompt.match(/第\d+日：2026-/g)?.length, 180);
   assert.ok(session.prompt.length < 50_000);
   assert.match(session.prompt, /日期偏好：避开周末/);
   assert.match(session.prompt, /时段条件：工作日常规办事时段、优先上午/);

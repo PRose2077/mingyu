@@ -98,6 +98,16 @@ const toolCalls: Array<[string, Record<string, unknown>]> = [
       customDate: '2026-08-24T12:30:00+08:00',
     },
   ],
+  ['name_generate', { surname: '李', gender: '通用', limit: 3 }],
+  ['name_analyze', { fullName: '李清和' }],
+  ['name_generate_prompt', { surname: '李', limit: 3 }],
+  ['name_analyze_prompt', { fullName: '李清和' }],
+  ['character_analyze', { text: '万学' }],
+  ['character_select', { kangxiStrokes: 8, wuxing: '木', limit: 5 }],
+  ['number_analyze', { value: '粤B12345', purpose: 'plate' }],
+  ['number_energy_prompt', { value: '粤B12345', purpose: 'plate' }],
+  ['divine_zhuge', { text: '顺其然' }],
+  ['divine_kongming', { pattern: '10101' }],
   ['divine_qimen', {}],
   [
     'divine_jinkoujue',
@@ -432,6 +442,38 @@ async function withMcpClient<T>(callback: (client: Client) => Promise<T>) {
   return callback(await getMcpClient());
 }
 
+test('蓍草 MCP 支持计算、分堆重放和完整提示词', async () => {
+  await withMcpClient(async (client) => {
+    const input = { method: 'yarrow', seed: 'MCP蓍草', customDate: '2026-09-06T12:00:00+08:00' };
+    const chart = await client.callTool({ name: 'divine_liuyao', arguments: input });
+    assert.equal(chart.isError, undefined);
+    const data = chart.structuredContent
+      ?.result as import('../../packages/core/src/types/divination').LiuyaoData;
+    assert.equal(data.generation?.method, 'yarrow');
+    const splits = data.generation!.yarrow!.lines.flatMap((line) =>
+      line.changes.map((step) => step.left),
+    );
+    const hand = await client.callTool({
+      name: 'divine_liuyao',
+      arguments: { method: 'yarrow', customDate: input.customDate, yarrowSplits: splits },
+    });
+    assert.deepEqual((hand.structuredContent?.result as typeof data).yaoArray, data.yaoArray);
+    const promptResult = await client.callTool({
+      name: 'liuyao_prompt',
+      arguments: { ...input, question: '这件事如何推进？' },
+    });
+    const prompt = String(promptResult.structuredContent?.prompt);
+    assert.match(prompt, /蓍草/);
+    assert.match(prompt, /第3变/);
+    assertPromptIsPortableTaskText(prompt);
+    const invalid = await client.callTool({
+      name: 'divine_liuyao',
+      arguments: { ...input, yarrowSplits: splits },
+    });
+    assert.equal(invalid.isError, true);
+  });
+});
+
 async function withIsolatedMcpClient<T>(callback: (client: Client) => Promise<T>) {
   const client = await createMcpClient();
   try {
@@ -441,11 +483,51 @@ async function withIsolatedMcpClient<T>(callback: (client: Client) => Promise<T>
   }
 }
 
+test('姓名 MCP 真太阳时可省略时辰，普通出生资料缺时辰应报错', async () => {
+  await withMcpClient(async (client) => {
+    const birth = {
+      gender: 'male',
+      year: 1990,
+      month: 6,
+      day: 15,
+      useTrueSolarTime: true,
+      birthHour: 12,
+      birthMinute: 30,
+      birthLongitude: 116.4,
+      timezone: 8,
+    };
+    for (const name of [
+      'name_generate',
+      'name_analyze',
+      'name_generate_prompt',
+      'name_analyze_prompt',
+    ]) {
+      const input = name.startsWith('name_generate')
+        ? { surname: '张', limit: 1 }
+        : { fullName: '张明' };
+      const result = await client.callTool({ name, arguments: { ...input, birth } });
+      assert.equal(result.isError, undefined, `${name} 应支持精确时分代替时辰`);
+      const withTimeIndex = await client.callTool({
+        name,
+        arguments: { ...input, birth: { ...birth, timeIndex: 0 } },
+      });
+      assert.equal(withTimeIndex.isError, undefined);
+      assert.deepEqual(result.structuredContent, withTimeIndex.structuredContent);
+      const invalid = await client.callTool({
+        name,
+        arguments: { ...input, birth: { ...birth, useTrueSolarTime: false } },
+      });
+      assert.equal(invalid.isError, true, `${name} 应拒绝缺少时辰的普通出生资料`);
+    }
+  });
+});
+
 test('MCP 工具列表应声明输出结构', async () => {
   await withIsolatedMcpClient(async (client) => {
     const { tools } = await client.listTools();
 
-    assert.equal(tools.length, 61);
+    assert.equal(tools.length, 74);
+    assert.ok(tools.find((tool) => tool.name === 'thematic_consultation_prompt'));
     tools.forEach((tool) => {
       assert.equal(tool.outputSchema?.type, 'object', `${tool.name} 缺少 outputSchema`);
     });
@@ -454,6 +536,8 @@ test('MCP 工具列表应声明输出结构', async () => {
     assert.ok(ziweiTool?.outputSchema?.properties?.payloadByScope);
     assert.ok(tools.find((tool) => tool.name === 'ziwei_compatibility'));
     assert.ok(tools.find((tool) => tool.name === 'ziwei_compatibility_prompt'));
+    assert.ok(tools.find((tool) => tool.name === 'divine_qimen_lifetime'));
+    assert.ok(tools.find((tool) => tool.name === 'qimen_lifetime_prompt'));
     assert.equal(
       tools.find((tool) => tool.name === 'bazi_time_sensitivity'),
       undefined,
@@ -465,6 +549,20 @@ test('MCP 工具列表应声明输出结构', async () => {
     assert.ok(tools.find((tool) => tool.name === 'foundation_direction'));
     assert.ok(tools.find((tool) => tool.name === 'foundation_shensha'));
     assert.ok(tools.find((tool) => tool.name === 'instant_chart'));
+    for (const name of [
+      'name_generate',
+      'name_analyze',
+      'name_generate_prompt',
+      'name_analyze_prompt',
+      'character_analyze',
+      'character_select',
+      'number_analyze',
+      'number_energy_prompt',
+      'divine_zhuge',
+      'divine_kongming',
+    ]) {
+      assert.ok(tools.find((tool) => tool.name === name));
+    }
     assert.ok(tools.find((tool) => tool.name === 'metaphysics_residential'));
     assert.ok(tools.find((tool) => tool.name === 'residential_prompt'));
     assert.ok(tools.find((tool) => tool.name === 'metaphysics_xuankong'));
@@ -553,6 +651,58 @@ test('MCP 排盘工具应返回 structuredContent，文本兼容输出不重复�
         false,
         `${name} 不应通过旧排盘工具返回提示词`,
       );
+      if (name === 'divine_zhuge') {
+        const firstSign = await client.callTool({
+          name,
+          arguments: { text: '夏夏一', detailMode: 'full' },
+        });
+        assert.equal(firstSign.isError, undefined);
+        const analysis = firstSign.structuredContent!.result as {
+          number: number;
+          sign: { summary: string };
+          interpretation: { quote: string; interpretation: string; classicalImage: string };
+        };
+        assert.equal(analysis.number, 1);
+        assert.equal(analysis.interpretation.quote, '秋高听鹿鸣');
+        assert.equal(analysis.sign.summary, analysis.interpretation.interpretation);
+        assert.match(analysis.interpretation.classicalImage, /诗经·小雅·鹿鸣/);
+      }
+      if (name === 'divine_kongming') {
+        const analysis = result.structuredContent.result as {
+          interpretation: { quote: string; interpretation: string; condition: string };
+          draws: Array<{ index: number; polarity: string }>;
+        };
+        assert.equal(analysis.interpretation.quote, '目下如冬树');
+        assert.match(analysis.interpretation.interpretation, /等待条件回暖/);
+        assert.match(analysis.interpretation.condition, /启动信号/);
+        assert.deepEqual(
+          analysis.draws.map((item) => item.polarity),
+          ['阳', '阴', '阳', '阴', '阳'],
+        );
+      }
+      if (name === 'number_analyze') {
+        const analysis = result.structuredContent.result as {
+          energyPairs: Array<{ trigramEvidence: { starName: string; changedLines: number[] } }>;
+        };
+        assert.equal(analysis.energyPairs[0].trigramEvidence.starName, '破军');
+        assert.deepEqual(analysis.energyPairs[0].trigramEvidence.changedLines, [2]);
+      }
+      if (name === 'character_analyze') {
+        const analysis = result.structuredContent.result as {
+          characters: Array<{
+            detail: {
+              simplifiedStrokes: number;
+              traditionalStrokes: number;
+              kangxiText: string;
+              definition: string;
+            };
+          }>;
+        };
+        assert.equal(analysis.characters[1].detail.simplifiedStrokes, 8);
+        assert.equal(analysis.characters[1].detail.traditionalStrokes, 16);
+        assert.match(analysis.characters[1].detail.kangxiText, /【說文】/);
+        assert.match(analysis.characters[1].detail.definition, /博学多才/);
+      }
       if (name === 'foundation_capabilities') {
         const capabilities = result.structuredContent.result as {
           key: string;
@@ -646,7 +796,9 @@ test('MCP 排盘工具应返回 structuredContent，文本兼容输出不重复�
         assert.deepEqual(analysis.weakestElements, ['金']);
         assert.equal(analysis.summaryFact.itemFactCount, analysis.itemFacts.length);
         assert.equal(analysis.summaryFact.limitationFactCount, analysis.limitationFacts.length);
-        assert.match(analysis.promptText, /不是命理吉凶评分/);
+        assert.match(analysis.promptText, /五行构成的加权统计口径/);
+        assert.match(analysis.promptText, /【任务】[\s\S]*【结果】/);
+        assert.doesNotMatch(analysis.promptText, /证据汇总|证据链完整|单一真相源|来源：|限制：/);
       }
       if (name === 'foundation_direction') {
         const direction = result.structuredContent.result as {
@@ -1207,6 +1359,24 @@ test('MCP 生肖流年应拒绝缺失或互相冲突的年份依据', async () =
   });
 });
 
+test('MCP 生肖提示词保留问题与关系资料，不混入内部证据字段', async () => {
+  await withMcpClient(async (client) => {
+    const result = await client.callTool({
+      name: 'zodiac_prompt',
+      arguments: { zodiac: '鼠', year: 2026, question: '今年的关系如何理解？' },
+    });
+    assert.notEqual(result.isError, true);
+    const prompt = (result.structuredContent as { prompt: string }).prompt;
+    assert.match(prompt, /今年的关系如何理解/);
+    assert.match(prompt, /鼠（子）遇丙午年/);
+    assert.match(prompt, /冲太岁（生肖年支子与流年年支午相冲）/);
+    assert.doesNotMatch(
+      prompt,
+      /结构化类型|证据链完整|证据汇总|有利关系：|风险关系：|actionSignals|classification/,
+    );
+  });
+});
+
 test('MCP 真太阳时工具应返回换算资料并拒绝带时区后缀的钟表时间', async () => {
   await withMcpClient(async (client) => {
     const success = await client.callTool({
@@ -1388,6 +1558,11 @@ test('MCP 五运六气与皇极经世应返回可复核结构并严格拒绝冲�
       arguments: { year: 2026, yearGanZhi: '丙午' },
     });
     const wuyunResult = wuyun.structuredContent?.result as {
+      pathomechanism: {
+        isPingQi: null;
+        movementRegime: string;
+        classicalReference: { condition: string; conditionEstablished: null };
+      };
       input: { yearGanZhi: string };
       annualMovement: { name: string; strength: string };
       sitian: { name: string };
@@ -1405,11 +1580,31 @@ test('MCP 五运六气与皇极经世应返回可复核结构并严格拒绝冲�
       qiSteps: Array<{
         guestRole?: string;
         solarTerms: string[];
-        hostGuestRelation: { kind: string };
+        hostGuestRelation: { kind: string; fireOrder?: string };
       }>;
+      annualClassification: { sitianTransformation: string; governance: string };
     };
     assert.equal(wuyun.isError, undefined);
     assert.equal(wuyunResult.input.yearGanZhi, '丙午');
+    assert.equal(wuyunResult.pathomechanism.isPingQi, null);
+    assert.equal(wuyunResult.pathomechanism.movementRegime, '流衍之纪');
+    assert.equal(wuyunResult.pathomechanism.classicalReference.condition, '少阴司天，热淫所胜');
+    assert.equal(wuyunResult.pathomechanism.classicalReference.conditionEstablished, null);
+    assert.equal(wuyunResult.qiSteps[2].hostGuestRelation.fireOrder, '君位臣则顺');
+    assert.equal(wuyunResult.annualClassification.sitianTransformation, '正化');
+    assert.equal(wuyunResult.annualClassification.governance, '北政');
+    const assisted = await client.callTool({
+      name: 'metaphysics_wuyun_liuqi',
+      arguments: { yearGanZhi: '辛卯' },
+    });
+    assert.equal(assisted.isError, undefined);
+    const assistedResult = assisted.structuredContent?.result as {
+      pathomechanism: { isPingQi: null; pingQiConditions: string[] };
+    };
+    assert.equal(assistedResult.pathomechanism.isPingQi, null);
+    assert.ok(
+      assistedResult.pathomechanism.pingQiConditions.includes('阳明燥金司天生水运，资助岁运不及'),
+    );
     assert.deepEqual(
       [wuyunResult.annualMovement.name, wuyunResult.annualMovement.strength],
       ['水运', '太过'],
@@ -2423,7 +2618,7 @@ test('MCP 提示词工具应支持 custom 模式，并与页面和 API 保持一
     assert.equal(ziweiFrameworkResult.isError, undefined, 'ziwei_prompt framework 不应返回错误');
     const ziweiFrameworkPrompt = String(ziweiFrameworkResult.structuredContent?.prompt);
     assert.match(ziweiFrameworkPrompt, /分析主题：人生解析/);
-    assert.match(ziweiFrameworkPrompt, /【重点宫位资料】/);
+    assert.match(ziweiFrameworkPrompt, /【十二宫资料】/);
     assert.doesNotMatch(ziweiFrameworkPrompt, /iztro|排盘资料提供/);
     assert.match(ziweiFrameworkPrompt, /【当前时间】/);
     assert.match(ziweiFrameworkPrompt, /【本命资料】/);
@@ -3615,6 +3810,7 @@ test('MCP 六爻与大六壬提示词工具保留用户模板范围', async () =
     assert.equal(liurenResult.isError, undefined, 'liuren_prompt 不应返回错误');
     const liurenPrompt = String(liurenResult.structuredContent?.prompt);
     assert.match(liurenPrompt, /占法：大六壬/);
+    assert.match(liurenPrompt, /乘神生克：初传.+乘天盘.+与日干/);
     assert.match(liurenPrompt, /课传主线：[\s\S]*四课：[\s\S]*三传：/);
     assert.match(liurenPrompt, /【问题范围】\n事业工作/);
     assert.doesNotMatch(liurenPrompt, /结构化证据|计算链|证据汇总|解释限制|断课要点/);
@@ -3880,7 +4076,7 @@ test('MCP 六爻与大六壬提示词工具保留用户模板范围', async () =
     );
     assert.deepEqual(
       new Set(liurenData.evidenceAnalysis.traditionalFacts.map((item) => item.kind)),
-      new Set(['经典取传规则', '课体', '天将属性', '神煞']),
+      new Set(['经典取传规则', '课体', '天将属性', '天将乘神', '神煞']),
     );
     assert.doesNotMatch(liurenPrompt, /主婚姻|主官非|主疾病|主死丧|主虚而不实/);
     assert.doesNotMatch(liurenPrompt, /取传依据：/);
@@ -4678,5 +4874,28 @@ test('MCP 六爻支持模拟三钱投掷与随机轨迹重放', async () => {
     const replayResult = (replay.structuredContent as { result: LiuyaoReplayResult }).result;
     assert.deepEqual(replayResult.yaoArray, firstResult.yaoArray);
     assert.equal(replayResult.meta.resultId, firstResult.meta.resultId);
+  });
+});
+
+test('MCP 小六壬多能鄙事口径贯穿课盘与完整提示词', async () => {
+  await withMcpClient(async (client) => {
+    const args = { xiaoliurenRule: 'duoneng', customDate: '2025-01-29T00:30:00+08:00' };
+    const chart = await client.callTool({ name: 'divine_xiaoliuren', arguments: args });
+    assert.equal(chart.isError, undefined);
+    const result = (
+      chart.structuredContent as { result: { rule: string; primary: { name: string } } }
+    ).result;
+    assert.equal(result.rule, 'duoneng');
+    assert.equal(result.primary.name, '留连');
+    const response = await client.callTool({
+      name: 'xiaoliuren_prompt',
+      arguments: { ...args, question: '此事如何理解？' },
+    });
+    assert.equal(response.isError, undefined);
+    const prompt = (response.structuredContent as { prompt: string }).prompt;
+    assert.match(prompt, /多能鄙事/);
+    assert.match(prompt, /月宫大安下一宫起初一/);
+    assert.match(prompt, /占得宫：留连/);
+    assert.doesNotMatch(prompt, /通行俗传/);
   });
 });

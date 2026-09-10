@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   compareAndroidVersions,
   fetchLatestAndroidRelease,
+  normalizeAndroidManifest,
   normalizeAndroidRelease,
 } from '../src/lib/android-app-update.ts';
 import {
@@ -49,6 +50,25 @@ test('只接受正式 Android Release 的成对官方文件', () => {
   assert.equal(normalizeAndroidRelease(redirected), null);
 });
 
+test('统一 APK 清单必须匹配命语的应用、版本和固定下载路径', () => {
+  const manifest = {
+    appId: 'mingyu',
+    packageName: 'cc.aov.mingyu',
+    channel: 'latest',
+    version: '1.2.3',
+    fileName: 'mingyu-1.2.3.apk',
+    apkUrl: 'https://download.aov.cc/apps/mingyu/android/1.2.3/mingyu-1.2.3.apk',
+    checksumUrl: 'https://download.aov.cc/apps/mingyu/android/1.2.3/mingyu-1.2.3.apk.sha256',
+    releaseUrl: 'https://github.com/Brhiza/mingyu/releases/tag/android-v1.2.3',
+  };
+  assert.equal(normalizeAndroidManifest(manifest)?.version, '1.2.3');
+  assert.equal(normalizeAndroidManifest({ ...manifest, appId: 'other' }), null);
+  assert.equal(
+    normalizeAndroidManifest({ ...manifest, apkUrl: 'https://example.com/app.apk' }),
+    null,
+  );
+});
+
 test('更新检查会跳过其他用途的 GitHub Release', async () => {
   const result = await fetchLatestAndroidRelease(
     (async () =>
@@ -60,27 +80,24 @@ test('更新检查会跳过其他用途的 GitHub Release', async () => {
   assert.equal(result?.version, '2.0.0');
 });
 
-test('Android 更新生成蓝奏云、GitHub 直连和两个加速线路', () => {
-  const githubUrl =
-    'https://github.com/Brhiza/mingyu/releases/download/android-v1.2.3/mingyu-1.2.3.apk';
-  const routes = buildAndroidDownloadRoutes('1.2.3', githubUrl);
+test('Android 更新只生成默认下载和 GitHub 备用线路', () => {
+  const cdnUrl = 'https://download.aov.cc/apps/mingyu/android/1.2.3/mingyu-1.2.3.apk';
+  const routes = buildAndroidDownloadRoutes('1.2.3', cdnUrl);
   assert.deepEqual(
     routes.map((route) => route.id),
-    ['lanzou', 'github', 'gh-proxy', 'ghfast'],
+    ['rng-cdn', 'github'],
   );
-  assert.equal(
-    routes[0]?.url,
-    'https://lanzou-cloudflare-api.brhiza.workers.dev/v1/public/mingyu/1.2.3',
-  );
+  assert.equal(routes[0]?.url, cdnUrl);
+  assert.equal(routes[1]?.url, 'https://github.com/Brhiza/mingyu/releases/download/android-v1.2.3/mingyu-1.2.3.apk');
 });
 
 test('线路测速会跳过失败线路并自动选择最低延迟', async () => {
   const routes = buildAndroidDownloadRoutes('1.2.3', 'https://github.com/example.apk');
-  const probes = await probeAndroidDownloadRoutes(routes.slice(0, 3), (async (
+  const probes = await probeAndroidDownloadRoutes(routes, (async (
     url: RequestInfo | URL,
   ) => {
     const value = String(url);
-    await new Promise((resolve) => setTimeout(resolve, value.includes('gh-proxy') ? 2 : 12));
+    await new Promise((resolve) => setTimeout(resolve, value.startsWith('https://github.com/') ? 2 : 12));
     return new Response(null, {
       status: value.startsWith('https://github.com/') ? 503 : 200,
     });
@@ -90,24 +107,9 @@ test('线路测速会跳过失败线路并自动选择最低延迟', async () =>
     selectBestAndroidRoute([
       { ...routes[0]!, status: 'available', latencyMs: 40 },
       { ...routes[1]!, status: 'unavailable', latencyMs: null },
-      { ...routes[2]!, status: 'available', latencyMs: 12 },
     ])?.id,
-    'gh-proxy',
+    'rng-cdn',
   );
-});
-
-test('GitHub 加速线路拒绝 HEAD 时改用单字节 Range 测速', async () => {
-  const route = buildAndroidDownloadRoutes('1.2.3', 'https://github.com/example.apk')[2]!;
-  const methods: string[] = [];
-  const probes = await probeAndroidDownloadRoutes([route], (async (
-    _url: RequestInfo | URL,
-    init?: RequestInit,
-  ) => {
-    methods.push(init?.method || 'GET');
-    return new Response(null, { status: init?.method === 'GET' ? 206 : 500 });
-  }) as typeof fetch);
-  assert.deepEqual(methods, ['HEAD', 'GET']);
-  assert.equal(probes[0]?.status, 'available');
 });
 
 test('APK 工作流覆盖调试构建、正式签名、校验文件和 Release', async () => {
@@ -119,5 +121,14 @@ test('APK 工作流覆盖调试构建、正式签名、校验文件和 Release',
   assert.match(workflow, /APKSIGNER.*verify/);
   assert.match(workflow, /sha256sum/);
   assert.match(workflow, /gh release create/);
-  assert.match(workflow, /LANZOU_API_TOKEN/);
+  assert.doesNotMatch(workflow, /LANZOU_API_TOKEN/);
+  assert.match(workflow, /APP_RELEASE_PUBLISH_TOKEN/);
+  assert.match(workflow, /download\.aov\.cc\/v1\/publish\/mingyu/);
+});
+
+test('更新面板使用默认下载和 GitHub 备用线路', async () => {
+  const dialogContent = await readFile('src/components/AndroidAppUpdateDialog.tsx', 'utf8');
+  assert.match(dialogContent, /默认使用官方下载/);
+  assert.match(dialogContent, /updater\.installUpdate/);
+  assert.doesNotMatch(dialogContent, /lanzou|蓝奏/i);
 });

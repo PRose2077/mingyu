@@ -35,6 +35,9 @@ export interface ResidentialFengshuiInput {
   northReference?: 'unspecified' | 'magnetic' | 'true';
   magneticDeclinationDegrees?: number;
   measurementUncertaintyDegrees?: number;
+  flowYear?: number;
+  flowMonth?: number;
+  flowDay?: number;
 }
 
 export interface ResidentialFengshuiAgreement {
@@ -197,13 +200,20 @@ function buildXuanKong(
     ...(input.measurementUncertaintyDegrees != null
       ? { measurementUncertaintyDegrees: input.measurementUncertaintyDegrees }
       : {}),
+    ...(input.flowYear != null ? { flowYear: input.flowYear } : {}),
+    ...(input.flowMonth != null ? { flowMonth: input.flowMonth } : {}),
+    ...(input.flowDay != null ? { flowDay: input.flowDay } : {}),
   };
 
   if (input.sitDegree != null || input.facingDegree != null) {
     if (input.sitDegree != null) xuanInput.sitDegree = input.sitDegree;
     if (input.facingDegree != null) xuanInput.facingDegree = input.facingDegree;
+    if (input.sitMountain != null) xuanInput.sitMountain = input.sitMountain;
+    if (input.facingMountain != null) xuanInput.facingMountain = input.facingMountain;
   } else if (input.doorToInteriorDegree != null && measurement) {
     // 八宅门向量测：measuredDegree 是入户方向；玄空优先用其换算出的坐向。
+    if (measurement.sitDegree !== undefined) xuanInput.sitDegree = measurement.sitDegree;
+    if (measurement.facingDegree !== undefined) xuanInput.facingDegree = measurement.facingDegree;
     if (measurement.sitMountain) xuanInput.sitMountain = measurement.sitMountain;
     if (measurement.facingMountain) xuanInput.facingMountain = measurement.facingMountain;
   } else if (input.doorToInteriorDegree != null) {
@@ -398,6 +408,17 @@ function buildPrompt(result: {
       : '',
     result.xuankong ? `玄空完整盘面：\n${stripHeading(result.xuankong.prompt)}` : '',
     result.bazhai ? `八宅完整盘面：\n${stripHeading(result.bazhai.prompt)}` : '',
+    result.bazhai?.mingPalace?.length && result.xuankong?.palaces?.length
+      ? [
+          '方位合参：',
+          ...result.xuankong.palaces.map((palace) => {
+            const mansion = result.bazhai?.mingPalace.find(
+              (item) => palace.direction.replace(/宫$/u, '') === item.direction.replace(/方$/u, ''),
+            );
+            return `  ${palace.name}${palace.direction}：飞星运${palace.yunStar}山${palace.shanStar}向${palace.xiangStar}${palace.yearStar !== undefined ? `年${palace.yearStar}` : ''}${palace.monthStar !== undefined ? `月${palace.monthStar}` : ''}${mansion ? `；命卦${mansion.direction}${mansion.label}` : ''}`;
+          }),
+        ].join('\n')
+      : '',
   ];
   return lines.filter(Boolean).join('\n');
 }

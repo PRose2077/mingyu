@@ -66,10 +66,8 @@ test('单人增强提示词会保留完整任务结构并交叉校验两套盘�
   assert.match(prompt, /【紫微盘面信息】/);
   assert.match(prompt, /【问题范围】\n事业/);
   assert.match(prompt, /【问题】\n请重点分析我的事业方向和当前突破口。/);
-  assert.match(
-    prompt,
-    /先用八字判断命局主线、结构强弱、喜忌取用与当前触发，再用紫微校验对应宫位主轴、四化牵动、三方四正和运限落点/,
-  );
+  assert.match(prompt, /时间层未对齐时分开陈述/);
+  assert.doesNotMatch(prompt, /在共同岁运与运限层级推演/);
   assert.doesNotMatch(prompt, /【断盘要点】|【八字分析思路】|【输出要求】|现实建议/);
 });
 
